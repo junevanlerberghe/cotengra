@@ -1,10 +1,11 @@
 # Changelog
 
-## v0.7.5 (unreleased)
+## v0.7.5 (2025-06-12)
 
 **Enhancements**
 
 - [`ContractionTree.print_contractions`](cotengra.ContractionTree.print_contractions): fix `show_brackets` option, show preprocessing steps with original inputs indices.
+- Only warn about missing recommended dependencies when they otherwise would be used, i.e. for hyper optimization only.
 
 
 ## v0.7.4 (2025-05-13)

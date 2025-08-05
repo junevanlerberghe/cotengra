@@ -635,14 +635,22 @@ class DiskDict:
         self.retry_delay = float(retry_delay)
 
     def clear(self):
+        """Clear the memory cache and delete all value files, but leave
+        directory structure."""
         self._mem_cache.clear()
         if self._directory is not None:
-            for p in self._path.glob("*"):
-                p.unlink()
+            for p in self._path.glob("**/*"):
+                if p.is_file():
+                    p.unlink()
 
     def cleanup(self, delete_dir=False):
+        """Delete all files and subdirectories and optionally delete the root
+        directory."""
         self.clear()
         if delete_dir and (self._directory is not None):
+            for p in self._path.glob("**/*"):
+                if p.is_dir():
+                    p.rmdir()
             self._path.rmdir()
 
     def __contains__(self, k):
@@ -670,6 +678,25 @@ class DiskDict:
             # write file!
             with open(fname, "wb+") as f:
                 pickle.dump(v, f)
+
+    def __delitem__(self, k):
+        found = False
+
+        # delete from memory cache
+        if k in self._mem_cache:
+            del self._mem_cache[k]
+            found = True
+
+        # possibly delete from disk
+        if self._directory is not None:
+            if not isinstance(k, tuple):
+                k = (k,)
+            if self._path.joinpath(*k).exists():
+                self._path.joinpath(*k).unlink()
+                found = True
+
+        if not found:
+            raise KeyError(k)
 
     def __getitem__(self, k):
         try:
@@ -702,6 +729,35 @@ class DiskDict:
 
             # file exists but there is some other error after retrying
             raise e
+
+    def get(self, k, default=None):
+        try:
+            return self[k]
+        except KeyError:
+            return default
+
+    def keys(self):
+        if self._directory is None:
+            return self._mem_cache.keys()
+        else:
+            disk_keys = []
+            for p in self._path.rglob("*"):
+                if p.is_file():
+                    rel = p.relative_to(self._path)
+                    if len(rel.parents) == 1:
+                        # direct child of root path
+                        disk_keys.append(rel.name)
+                    else:
+                        disk_keys.append(tuple(rel.parts))
+            return disk_keys
+
+    def values(self):
+        for k in self.keys():
+            yield self[k]
+
+    def items(self):
+        for k in self.keys():
+            yield (k, self[k])
 
 
 def get_rng(seed=None):
