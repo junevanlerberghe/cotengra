@@ -150,6 +150,7 @@ class WriteObjective(ExactObjective):
             s = sum(s)
         except TypeError:
             pass
+        
         return math.log2(s)
 
     def score_slice_index(self, costs, ix):
@@ -264,6 +265,7 @@ class ComboObjective(ExactObjective):
             w = sum(w)
         except TypeError:
             pass
+        
         return math.log2(f + self.factor * w)
 
     def score_slice_index(self, costs, ix):

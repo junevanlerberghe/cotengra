@@ -67,7 +67,6 @@ test = [
     "cmaes",
     "dask",
     "distributed",
-    "kahypar",
     "matplotlib",
     "networkx",
     "nevergrad",

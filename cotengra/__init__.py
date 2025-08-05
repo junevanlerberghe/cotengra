@@ -100,15 +100,17 @@ from .plot import (
     plot_trials,
     plot_trials_alt,
 )
+print("before importing auto")
 from .presets import (
-    AutoHQOptimizer,
-    AutoOptimizer,
-    auto_hq_optimize,
-    auto_optimize,
-    greedy_optimize,
-    optimal_optimize,
-    optimal_outer_optimize,
+#     AutoHQOptimizer,
+#     AutoOptimizer,
+#     auto_hq_optimize,
+#     auto_optimize,
+      greedy_optimize,
+#     optimal_optimize,
+#     optimal_outer_optimize,
 )
+print("after importing auto")
 from .reusable import (
     hash_contraction,
 )
@@ -143,7 +145,7 @@ __all__ = (
     "array_contract_tree",
     "array_contract",
     "auto_hq_optimize",
-    "auto_optimize",
+    #"auto_optimize",
     "AutoHQOptimizer",
     "AutoOptimizer",
     "contract_expression",

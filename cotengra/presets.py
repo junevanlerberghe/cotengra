@@ -1,6 +1,7 @@
 """Preset configured optimizers."""
 
 import threading
+import traceback
 
 from .core import ContractionTree
 from .hyperoptimizers.hyper import (
@@ -62,14 +63,16 @@ class AutoOptimizer(PathOptimizer):
         self.kwargs.setdefault("max_time", "rate:1e9")
         self.kwargs.setdefault("optlib", get_default_optlib_eco())
         self.kwargs.setdefault("parallel", False)
-        self.kwargs.setdefault("reconf_opts", {})
-        self.kwargs["reconf_opts"].setdefault("subtree_size", 4)
-        self.kwargs["reconf_opts"].setdefault("maxiter", 100)
+        # self.kwargs.setdefault("reconf_opts", {})
+        # self.kwargs["reconf_opts"].setdefault("subtree_size", 4)
+        # self.kwargs["reconf_opts"].setdefault("maxiter", 100)
 
         self._hyperoptimizers_by_thread = {}
         if cache:
+
             self._optimizer_hyper_cls = ReusableHyperOptimizer
         else:
+
             self._optimizer_hyper_cls = HyperOptimizer
 
     def _get_optimizer_hyper_threadsafe(self):
@@ -79,6 +82,7 @@ class AutoOptimizer(PathOptimizer):
         try:
             return self._hyperoptimizers_by_thread[tid]
         except KeyError:
+   
             opt = self._optimizer_hyper_cls(
                 minimize=self.minimize, **self.kwargs
             )
@@ -112,6 +116,9 @@ class AutoOptimizer(PathOptimizer):
             )
 
     def __call__(self, inputs, output, size_dict, **kwargs):
+        # print("CALLED __call__ FROM:")
+        # traceback.print_stack()
+
         if estimate_optimal_hardness(inputs) < self.optimal_cutoff:
             # easy to solve exactly
             return self._optimize_optimal_fn(
@@ -124,6 +131,7 @@ class AutoOptimizer(PathOptimizer):
             )
         else:
             # use hyperoptimizer
+        
             return self._get_optimizer_hyper_threadsafe()(
                 inputs, output, size_dict, **kwargs
             )
@@ -143,14 +151,17 @@ class AutoHQOptimizer(AutoOptimizer):
         kwargs.setdefault("max_time", "rate:1e8")
         kwargs.setdefault("optlib", get_default_optlib())
         kwargs.setdefault("parallel", False)
-        kwargs.setdefault("reconf_opts", {})
-        kwargs["reconf_opts"].setdefault("subtree_size", 8)
-        kwargs["reconf_opts"].setdefault("maxiter", 500)
+        # kwargs.setdefault("reconf_opts", {})
+        # kwargs["reconf_opts"].setdefault("subtree_size", 8)
+        # kwargs["reconf_opts"].setdefault("maxiter", 500)
         super().__init__(**kwargs)
 
 
 auto_optimize = AutoOptimizer()
 auto_hq_optimize = AutoHQOptimizer()
+
+def set_auto_optimize(opt):
+    auto_hq_optimize = opt
 
 # these names overlap with opt_einsum, but won't override presets there
 register_preset(

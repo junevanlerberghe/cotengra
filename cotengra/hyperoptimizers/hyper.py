@@ -133,6 +133,7 @@ class TrialSetObjective:
         self.objective = objective
 
     def __call__(self, *args, **kwargs):
+       
         trial = self.trial_fn(*args, **kwargs)
         trial["tree"].set_default_objective(self.objective)
         return trial
@@ -211,12 +212,14 @@ class SimulatedAnnealingTrialFn:
 
 class ReconfTrialFn:
     def __init__(self, trial_fn, forested=False, parallel=False, **opts):
+ 
         self.trial_fn = trial_fn
         self.forested = forested
         self.parallel = parallel
         self.opts = opts
 
     def __call__(self, *args, **kwargs):
+
         trial = self.trial_fn(*args, **kwargs)
         tree = trial["tree"]
 
@@ -296,6 +299,7 @@ class ComputeScore:
     ):
         self.fn = fn
         self.score_fn = score_fn
+    
         self.score_compression = score_compression
         self.score_smudge = score_smudge
         self.on_trial_error = {
@@ -309,6 +313,7 @@ class ComputeScore:
         ti = time.time()
         try:
             trial = self.fn(*args, **kwargs)
+   
             trial["score"] = self.score_fn(trial) ** self.score_compression
             # random smudge is for baytune/scikit-learn nan/inf bug
             trial["score"] += self.rng.gauss(0.0, self.score_smudge)
@@ -451,11 +456,17 @@ class HyperOptimizer(PathOptimizer):
         else:
             self._methods = list(methods)
 
+       
+
         if optlib is None:
             optlib = get_default_optlib()
 
         # which score to feed to the hyper optimizer (setter below handles)
         self.minimize = minimize
+
+        print("Minimize is:", self.minimize)
+
+        print("optlib is: ", optlib)
         self.score_compression = score_compression
         self.on_trial_error = on_trial_error
         self.best_score = float("inf")
@@ -553,13 +564,16 @@ class HyperOptimizer(PathOptimizer):
             if self.compressed:
                 trial_fn = CompressedReconfTrial(trial_fn, **self.reconf_opts)
             else:
+                print("reconf options are not none, : ", self.reconf_opts)
                 self.reconf_opts.setdefault("parallel", nested_parallel)
                 trial_fn = ReconfTrialFn(trial_fn, **self.reconf_opts)
 
         # make sure score computation is performed worker side
+     
         trial_fn = ComputeScore(
             trial_fn,
             score_fn=self.objective,
+            
             score_compression=self.score_compression,
             on_trial_error=self.on_trial_error,
         )
@@ -688,7 +702,6 @@ class HyperOptimizer(PathOptimizer):
                 return False
 
         trial_fn, trial_args = self.setup(inputs, output, size_dict)
-
         r_start = self._repeats_start + len(self.scores)
         r_stop = r_start + self.max_repeats
         repeats = range(r_start, r_stop)
@@ -709,11 +722,14 @@ class HyperOptimizer(PathOptimizer):
             trials = pbar
 
         # assess the trials
+        # print("about to loop through trials, # = ", len(trials))
         for trial in trials:
             # check if we have found a new best
+  
             if trial["score"] < self.best["score"]:
                 self.trials_since_best = 0
                 self.best = trial
+   
                 self.best["params"] = dict(self.param_choices[-1])
                 self.best["params"]["method"] = self.method_choices[-1]
 
@@ -721,17 +737,19 @@ class HyperOptimizer(PathOptimizer):
                     pbar.set_description(
                         progress_description(self.best), refresh=False
                     )
-
+      
             else:
+    
                 self.trials_since_best += 1
 
             # check if we have run out of time
+
             if should_stop():
                 break
 
         if self.progbar:
             pbar.close()
-
+        
         self._maybe_cancel_futures()
 
     def search(self, inputs, output, size_dict):

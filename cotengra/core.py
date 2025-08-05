@@ -87,6 +87,7 @@ def legs_union(legs_seq):
     """Combine a sequence of legs into a single set of legs, summing their
     appearances.
     """
+
     new_legs, *rem_legs = legs_seq
     new_legs = new_legs.copy()
     for legs in rem_legs:
@@ -378,7 +379,6 @@ class ContractionTree:
             objective = self.get_default_objective()
 
         objective = get_score_fn(objective)
-
         return objective({"tree": self})
 
     @property
@@ -782,7 +782,6 @@ class ContractionTree:
             # add a preprocessing step to the list of contractions
             eq = inputs_output_to_eq((term,), legs, canonicalize=True)
             self.preprocessing[i] = eq
-
         return legs
 
     def has_preprocessing(self):
