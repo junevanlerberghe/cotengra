@@ -13,6 +13,7 @@ def trial_greedy(
     inputs,
     output,
     size_dict,
+    contraction_object,
     random_strength=0.0,
     temperature=0.0,
     costmod=1.0,
@@ -27,13 +28,12 @@ def trial_greedy(
         inputs,
         output,
         greedy_size_dict,
+        contraction_object,
         temperature=temperature,
         costmod=costmod,
     )
 
-    return ContractionTree.from_path(
-        inputs, output, size_dict, ssa_path=ssa_path
-    )
+    return ContractionTree.from_path(inputs, output, size_dict, ssa_path=ssa_path)
 
 
 register_hyper_function(

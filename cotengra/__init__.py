@@ -100,17 +100,15 @@ from .plot import (
     plot_trials,
     plot_trials_alt,
 )
-print("before importing auto")
 from .presets import (
-#     AutoHQOptimizer,
-#     AutoOptimizer,
-#     auto_hq_optimize,
-#     auto_optimize,
-      greedy_optimize,
-#     optimal_optimize,
-#     optimal_outer_optimize,
+    AutoHQOptimizer,
+    AutoOptimizer,
+    auto_hq_optimize,
+    auto_optimize,
+    greedy_optimize,
+    optimal_optimize,
+    optimal_outer_optimize,
 )
-print("after importing auto")
 from .reusable import (
     hash_contraction,
 )
@@ -145,7 +143,7 @@ __all__ = (
     "array_contract_tree",
     "array_contract",
     "auto_hq_optimize",
-    #"auto_optimize",
+    "auto_optimize",
     "AutoHQOptimizer",
     "AutoOptimizer",
     "contract_expression",
@@ -232,9 +230,7 @@ def hyper_optimize(
     **opts,
 ):
     if memory_limit is not None:
-        warnings.warn(
-            "`memory_limit` is not supported in hyper_optimize, ignoring."
-        )
+        warnings.warn("`memory_limit` is not supported in hyper_optimize, ignoring.")
 
     optimizer = HyperOptimizer(**opts)
     if get == "path":
@@ -262,13 +258,10 @@ def hyper_compressed_optimize(
         raise ValueError(f"Unknown get option {get}")
 
 
-def random_greedy_optimize(
-    inputs, output, size_dict, memory_limit=None, **opts
-):
+def random_greedy_optimize(inputs, output, size_dict, memory_limit=None, **opts):
     if memory_limit is not None:
         warnings.warn(
-            "`memory_limit` is not supported in "
-            "random_greedy_optimize, ignoring."
+            "`memory_limit` is not supported in " "random_greedy_optimize, ignoring."
         )
 
     optimizer = RandomGreedyOptimizer(**opts)
@@ -284,9 +277,7 @@ try:
     register_preset(
         "hyper-256",
         functools.partial(hyper_optimize, max_repeats=256),
-        optimizer_tree=functools.partial(
-            hyper_optimize, max_repeats=256, get="tree"
-        ),
+        optimizer_tree=functools.partial(hyper_optimize, max_repeats=256, get="tree"),
     )
     register_preset(
         "hyper-greedy",
@@ -311,9 +302,7 @@ try:
     )
     register_preset(
         "hyper-balanced",
-        functools.partial(
-            hyper_optimize, methods=["kahypar-balanced"], max_repeats=16
-        ),
+        functools.partial(hyper_optimize, methods=["kahypar-balanced"], max_repeats=16),
         optimizer_tree=functools.partial(
             hyper_optimize,
             methods=["kahypar-balanced"],

@@ -3,6 +3,7 @@
 import functools
 import importlib
 import re
+import sys
 import time
 import warnings
 from math import log2, log10
@@ -125,8 +126,9 @@ def list_hyper_functions():
     return sorted(_PATH_FNS)
 
 
-def base_trial_fn(inputs, output, size_dict, method, **kwargs):
-    tree = _PATH_FNS[method](inputs, output, size_dict, **kwargs)
+def base_trial_fn(inputs, output, size_dict, contraction_object, method, **kwargs):
+    tree = _PATH_FNS[method](inputs, output, size_dict, contraction_object, **kwargs)
+    # print("using method: ", _PATH_FNS)
     return {"tree": tree}
 
 
@@ -136,9 +138,9 @@ class TrialSetObjective:
         self.objective = objective
 
     def __call__(self, *args, **kwargs):
-       
         trial = self.trial_fn(*args, **kwargs)
         trial["tree"].set_default_objective(self.objective)
+
         return trial
 
 
@@ -215,7 +217,7 @@ class SimulatedAnnealingTrialFn:
 
 class ReconfTrialFn:
     def __init__(self, trial_fn, forested=False, parallel=False, **opts):
- 
+
         self.trial_fn = trial_fn
         self.forested = forested
         self.parallel = parallel
@@ -232,10 +234,9 @@ class ReconfTrialFn:
         trial.setdefault("original_size", stats["size"])
 
         if self.forested:
-            tree.subtree_reconfigure_forest_(
-                parallel=self.parallel, **self.opts
-            )
+            tree.subtree_reconfigure_forest_(parallel=self.parallel, **self.opts)
         else:
+            print("self.opts are: ", self.opts)
             tree.subtree_reconfigure_(**self.opts)
 
         tree.already_optimized.clear()
@@ -261,9 +262,7 @@ class SlicedReconfTrialFn:
         trial.setdefault("original_size", stats["size"])
 
         if self.forested:
-            tree.slice_and_reconfigure_forest_(
-                parallel=self.parallel, **self.opts
-            )
+            tree.slice_and_reconfigure_forest_(parallel=self.parallel, **self.opts)
         else:
             tree.slice_and_reconfigure_(**self.opts)
 
@@ -302,7 +301,7 @@ class ComputeScore:
     ):
         self.fn = fn
         self.score_fn = score_fn
-    
+
         self.score_compression = score_compression
         self.score_smudge = score_smudge
         self.on_trial_error = {
@@ -316,7 +315,7 @@ class ComputeScore:
         ti = time.time()
         try:
             trial = self.fn(*args, **kwargs)
-   
+
             trial["score"] = self.score_fn(trial) ** self.score_compression
             # random smudge is for baytune/scikit-learn nan/inf bug
             trial["score"] += self.rng.gauss(0.0, self.score_smudge)
@@ -459,17 +458,16 @@ class HyperOptimizer(PathOptimizer):
         else:
             self._methods = list(methods)
 
-       
-
         if optlib is None:
             optlib = get_default_optlib()
 
         # which score to feed to the hyper optimizer (setter below handles)
         self.minimize = minimize
 
-        print("Minimize is:", self.minimize)
+        print("new hyperOptimizer, minimize is:", self.minimize)
 
         print("optlib is: ", optlib)
+        print("methods are: ", self._methods)
         self.score_compression = score_compression
         self.on_trial_error = on_trial_error
         self.best_score = float("inf")
@@ -480,13 +478,9 @@ class HyperOptimizer(PathOptimizer):
         self.trials_since_best = 0
 
         self.simulated_annealing_opts = (
-            None
-            if simulated_annealing_opts is None
-            else dict(simulated_annealing_opts)
+            None if simulated_annealing_opts is None else dict(simulated_annealing_opts)
         )
-        self.slicing_opts = (
-            None if slicing_opts is None else dict(slicing_opts)
-        )
+        self.slicing_opts = None if slicing_opts is None else dict(slicing_opts)
         self.reconf_opts = None if reconf_opts is None else dict(reconf_opts)
         self.slicing_reconf_opts = (
             None if slicing_reconf_opts is None else dict(slicing_reconf_opts)
@@ -524,9 +518,7 @@ class HyperOptimizer(PathOptimizer):
         self._pool = parse_parallel_arg(parallel)
         if self._pool is not None:
             self._num_workers = get_n_workers(self._pool)
-            self.pre_dispatch = max(
-                self._num_workers + 4, int(1.2 * self._num_workers)
-            )
+            self.pre_dispatch = max(self._num_workers + 4, int(1.2 * self._num_workers))
 
     @property
     def tree(self):
@@ -536,7 +528,7 @@ class HyperOptimizer(PathOptimizer):
     def path(self):
         return self.tree.get_path()
 
-    def setup(self, inputs, output, size_dict):
+    def setup(self, inputs, output, size_dict, sub_optimizer):
         trial_fn = TrialSetObjective(base_trial_fn, self.objective)
 
         if self.compressed:
@@ -559,9 +551,8 @@ class HyperOptimizer(PathOptimizer):
 
         if self.slicing_reconf_opts is not None:
             self.slicing_reconf_opts.setdefault("parallel", nested_parallel)
-            trial_fn = SlicedReconfTrialFn(
-                trial_fn, **self.slicing_reconf_opts
-            )
+            
+            trial_fn = SlicedReconfTrialFn(trial_fn, **self.slicing_reconf_opts)
 
         if self.reconf_opts is not None:
             if self.compressed:
@@ -569,19 +560,19 @@ class HyperOptimizer(PathOptimizer):
             else:
                 print("reconf options are not none, : ", self.reconf_opts)
                 self.reconf_opts.setdefault("parallel", nested_parallel)
+
                 trial_fn = ReconfTrialFn(trial_fn, **self.reconf_opts)
 
         # make sure score computation is performed worker side
-     
+
         trial_fn = ComputeScore(
             trial_fn,
             score_fn=self.objective,
-            
             score_compression=self.score_compression,
             on_trial_error=self.on_trial_error,
         )
 
-        return trial_fn, (inputs, output, size_dict)
+        return trial_fn, (inputs, output, size_dict, sub_optimizer)
 
     def _maybe_cancel_futures(self):
         if self._pool is not None:
@@ -604,7 +595,8 @@ class HyperOptimizer(PathOptimizer):
         ) and (
             # don't report bad trials
             # XXX: should we map to some high value?
-            trial["score"] < float("inf")
+            trial["score"]
+            < float("inf")
         )
 
         if should_report:
@@ -625,6 +617,8 @@ class HyperOptimizer(PathOptimizer):
         for _ in repeats:
             setting = self._optimizer["get_setting"](self)
             method = setting["method"]
+            # print("settings: ", setting["params"])
+            # print("CONSTANTS", constants[method])
 
             trial = trial_fn(
                 *trial_args,
@@ -673,14 +667,12 @@ class HyperOptimizer(PathOptimizer):
         while self._futures:
             yield self._get_and_report_next_future()
 
-    def _search(self, inputs, output, size_dict):
+    def _search(self, inputs, output, size_dict, sub_optimizer):
         # start a timer?
         if self.max_time is not None:
             t0 = time.time()
             if isinstance(self.max_time, str):
-                which, amount = re.match(
-                    r"(rate|equil):(.+)", self.max_time
-                ).groups()
+                which, amount = re.match(r"(rate|equil):(.+)", self.max_time).groups()
 
                 if which == "rate":
                     rate = float(amount)
@@ -704,7 +696,7 @@ class HyperOptimizer(PathOptimizer):
             def should_stop():
                 return False
 
-        trial_fn, trial_args = self.setup(inputs, output, size_dict)
+        trial_fn, trial_args = self.setup(inputs, output, size_dict, sub_optimizer)
         r_start = self._repeats_start + len(self.scores)
         r_stop = r_start + self.max_repeats
         repeats = range(r_start, r_stop)
@@ -719,30 +711,26 @@ class HyperOptimizer(PathOptimizer):
             import tqdm
 
             pbar = tqdm.tqdm(trials, total=self.max_repeats)
-            pbar.set_description(
-                progress_description(self.best), refresh=False
-            )
+            pbar.set_description(progress_description(self.best), refresh=False)
             trials = pbar
 
         # assess the trials
         # print("about to loop through trials, # = ", len(trials))
         for trial in trials:
             # check if we have found a new best
-  
+            print("TRIAL SCORE IS: ", trial["score"])
             if trial["score"] < self.best["score"]:
                 self.trials_since_best = 0
                 self.best = trial
-   
+                print("new best trial: ", trial)
                 self.best["params"] = dict(self.param_choices[-1])
                 self.best["params"]["method"] = self.method_choices[-1]
 
                 if self.progbar:
-                    pbar.set_description(
-                        progress_description(self.best), refresh=False
-                    )
-      
+                    pbar.set_description(progress_description(self.best), refresh=False)
+
             else:
-    
+
                 self.trials_since_best += 1
 
             # check if we have run out of time
@@ -752,10 +740,10 @@ class HyperOptimizer(PathOptimizer):
 
         if self.progbar:
             pbar.close()
-        
+
         self._maybe_cancel_futures()
 
-    def search(self, inputs, output, size_dict):
+    def search(self, inputs, output, size_dict, sub_optimizer="auto-hq"):
         """Run this optimizer and return the ``ContractionTree`` for the best
         path it finds.
         """
@@ -763,19 +751,22 @@ class HyperOptimizer(PathOptimizer):
             inputs,
             output,
             size_dict,
+            sub_optimizer
         )
+        print("returning tree: ", self.tree)
         return self.tree
 
     def get_tree(self):
         """Return the ``ContractionTree`` for the best path found."""
         return self.tree
 
-    def __call__(self, inputs, output, size_dict, memory_limit=None):
+    def __call__(self, inputs, output, size_dict, sub_optimizer="auto", memory_limit=None):
         """``opt_einsum`` interface, returns direct ``path``."""
         self._search(
             inputs,
             output,
             size_dict,
+            sub_optimizer
         )
         return tuple(self.path)
 
@@ -793,21 +784,13 @@ class HyperOptimizer(PathOptimizer):
         if sort == "method":
             trials.sort(key=lambda t: t[0])
         if sort == "combo":
-            trials.sort(
-                key=lambda t: log2(t[1]) / 1e3 + log2(t[2] + 256 * t[3])
-            )
+            trials.sort(key=lambda t: log2(t[1]) / 1e3 + log2(t[2] + 256 * t[3]))
         if sort == "size":
-            trials.sort(
-                key=lambda t: log2(t[1]) + log2(t[2]) / 1e3 + log2(t[3]) / 1e3
-            )
+            trials.sort(key=lambda t: log2(t[1]) + log2(t[2]) / 1e3 + log2(t[3]) / 1e3)
         if sort == "flops":
-            trials.sort(
-                key=lambda t: log2(t[1]) / 1e3 + log2(t[2]) + log2(t[3]) / 1e3
-            )
+            trials.sort(key=lambda t: log2(t[1]) / 1e3 + log2(t[2]) + log2(t[3]) / 1e3)
         if sort == "write":
-            trials.sort(
-                key=lambda t: log2(t[1]) / 1e3 + log2(t[2]) / 1e3 + log2(t[3])
-            )
+            trials.sort(key=lambda t: log2(t[1]) / 1e3 + log2(t[2]) / 1e3 + log2(t[3]))
 
         return trials
 
@@ -824,11 +807,7 @@ class HyperOptimizer(PathOptimizer):
         )
         row = "{:>11} {:>11.2f} {:>11.2f} {:>11.2f}    {}"
         for choice, size, flops, write, params in self.get_trials(sort):
-            print(
-                row.format(
-                    choice, log2(size), log10(flops), log10(write), params
-                )
-            )
+            print(row.format(choice, log2(size), log10(flops), log10(write), params))
 
     def to_df(self):
         """Create a single ``pandas.DataFrame`` with all trials and scores."""
@@ -1032,9 +1011,7 @@ class HyperCompressedOptimizer(HyperOptimizer):
         kwargs["minimize"] = minimize
 
         if kwargs.pop("slicing_opts", None) is not None:
-            raise ValueError(
-                "Cannot use slicing_opts with compressed contraction."
-            )
+            raise ValueError("Cannot use slicing_opts with compressed contraction.")
         if kwargs.pop("slicing_reconf_opts", None) is not None:
             raise ValueError(
                 "Cannot use slicing_reconf_opts with compressed contraction."
@@ -1087,17 +1064,14 @@ class ReusableHyperCompressedOptimizer(ReusableHyperOptimizer):
         kwargs["minimize"] = minimize
 
         if kwargs.pop("slicing_opts", None) is not None:
-            raise ValueError(
-                "Cannot use slicing_opts with compressed contraction."
-            )
+            raise ValueError("Cannot use slicing_opts with compressed contraction.")
         if kwargs.pop("slicing_reconf_opts", None) is not None:
             raise ValueError(
                 "Cannot use slicing_reconf_opts with compressed contraction."
             )
         if kwargs.pop("simulated_annealing_opts", None) is not None:
             raise ValueError(
-                "Cannot use simulated_annealing_opts "
-                "with compressed contraction."
+                "Cannot use simulated_annealing_opts " "with compressed contraction."
             )
 
         super().__init__(**kwargs)

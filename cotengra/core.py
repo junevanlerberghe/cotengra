@@ -296,6 +296,7 @@ class ContractionTree:
 
         # a default objective function useful for
         # further optimization and scoring
+        # print("Making contraction tree, setting default objective to: ", objective)
         self._default_objective = objective
 
     def set_state_from(self, other):
@@ -393,9 +394,7 @@ class ContractionTree:
         """The number of 'chunks' - determined by the number of sliced output
         indices.
         """
-        return prod(
-            si.size for si in self.sliced_inds.values() if not si.inner
-        )
+        return prod(si.size for si in self.sliced_inds.values() if not si.inner)
 
     def node_to_terms(self, node):
         """Turn a node -- a frozen set of ints -- into the corresponding terms
@@ -618,9 +617,7 @@ class ContractionTree:
         -------
         shapes : tuple[tuple[int]]
         """
-        return tuple(
-            tuple(self.size_dict[ix] for ix in term) for term in self.inputs
-        )
+        return tuple(tuple(self.size_dict[ix] for ix in term) for term in self.inputs)
 
     def get_inputs_sliced(self):
         """Get the input indices corresponding to a single slice of this tree,
@@ -653,9 +650,7 @@ class ContractionTree:
         -------
         eq : str
         """
-        return inputs_output_to_eq(
-            self.get_inputs_sliced(), self.get_output_sliced()
-        )
+        return inputs_output_to_eq(self.get_inputs_sliced(), self.get_output_sliced())
 
     def get_shapes_sliced(self):
         """Get the shapes of the input tensors corresponding to a single slice
@@ -666,9 +661,7 @@ class ContractionTree:
         shapes : tuple[tuple[int]]
         """
         return tuple(
-            tuple(
-                self.size_dict[ix] for ix in term if ix not in self.sliced_inds
-            )
+            tuple(self.size_dict[ix] for ix in term if ix not in self.sliced_inds)
             for term in self.inputs
         )
 
@@ -747,9 +740,7 @@ class ContractionTree:
         """
         # indices of input tensor (after slicing which is done immediately)
         if self.sliced_inds:
-            term = tuple(
-                ix for ix in self.inputs[i] if ix not in self.sliced_inds
-            )
+            term = tuple(ix for ix in self.inputs[i] if ix not in self.sliced_inds)
         else:
             term = self.inputs[i]
 
@@ -766,10 +757,7 @@ class ContractionTree:
             (len(term) != len(legs))
             or
             # reduced indices (are summed immediately)
-            any(
-                ix_count == self.appearances[ix]
-                for ix, ix_count in legs.items()
-            )
+            any(ix_count == self.appearances[ix] for ix, ix_count in legs.items())
         )
 
         if is_simplifiable:
@@ -1034,9 +1022,7 @@ class ContractionTree:
         stats : dict[str, int]
             The total flops, write and size.
         """
-        if force or not (
-            self._track_flops and self._track_write and self._track_size
-        ):
+        if force or not (self._track_flops and self._track_write and self._track_size):
             self._flops = self._write = 0
             self._sizes = MaxCounter()
 
@@ -1135,8 +1121,7 @@ class ContractionTree:
         """
         if dtype is not None:
             raise ValueError(
-                "Can only estimate cost in terms of "
-                "number of abstract scalar ops."
+                "Can only estimate cost in terms of " "number of abstract scalar ops."
             )
 
         F = self.compressed_contract_stats(
@@ -1370,9 +1355,12 @@ class ContractionTree:
         #   /  \    /   / \
         #  N0  N1  N2  N3  N4    <- ``nodes``, or, subgraphs
         #  /    \  /   /    \
+        # print("nodes are: ", nodes)
         path_inputs = [tuple(self.get_legs(x)) for x in nodes]
         path_output = tuple(self.get_legs(grandparent))
 
+        print("finding paath with: ", optimize)
+        # print("path inputs are: ", path_inputs)
         path = find_path(
             path_inputs,
             path_output,
@@ -1380,6 +1368,9 @@ class ContractionTree:
             optimize=optimize,
             **(extra_opts or {}),
         )
+
+        print("optimize was: ", optimize)
+        print("path found is: ", path)
 
         # now we have path create the nodes in between
         temp_nodes = list(nodes)
@@ -1856,19 +1847,19 @@ class ContractionTree:
         # ensure these have been computed and thus are being tracked
         tree.contract_stats()
 
-        if minimize is None:
-            minimize = self.get_default_objective()
-        scorer = get_score_fn(minimize)
+        minimize = "flops" # TODO: temporarily added this in to force default until I fix custom
 
+        scorer = get_score_fn(minimize)
+        print("minimize is: ", minimize)
         if optimize is None:
             from .pathfinders.path_basic import OptimalOptimizer
-
-            opt = OptimalOptimizer(
-                minimize=scorer.get_dynamic_programming_minimize()
-            )
+            if callable(minimize):
+                opt = OptimalOptimizer(minimize="custom")
+            else:
+                opt = OptimalOptimizer(minimize=scorer.get_dynamic_programming_minimize())
         else:
             opt = optimize
-
+        
         node_cost = getattr(scorer, "cost_local_tree_node", lambda _: 2)
 
         # different caches as we might want to reconfigure one before other
@@ -1949,9 +1940,7 @@ class ContractionTree:
 
         return tree
 
-    subtree_reconfigure_ = functools.partialmethod(
-        subtree_reconfigure, inplace=True
-    )
+    subtree_reconfigure_ = functools.partialmethod(subtree_reconfigure, inplace=True)
 
     def subtree_reconfigure_forest(
         self,
@@ -2098,9 +2087,7 @@ class ContractionTree:
                     ]
                     res = [
                         {"tree": tree_future, **res_future.result()}
-                        for tree_future, res_future in zip(
-                            forest_futures, res_futures
-                        )
+                        for tree_future, res_future in zip(forest_futures, res_futures)
                     ]
 
                 # update the order of the new forest
@@ -2420,24 +2407,20 @@ class ContractionTree:
                 ]
 
                 if pool is None:
-                    forest = [
-                        _slice_and_reconfigure_tree(**s) for s in saplings
-                    ]
+                    forest = [_slice_and_reconfigure_tree(**s) for s in saplings]
                     res = [{"tree": t, **_get_tree_info(t)} for t in forest]
 
                 elif not is_scatter_pool:
                     # simple pool with no pass by reference
                     forest_futures = [
-                        submit(pool, _slice_and_reconfigure_tree, **s)
-                        for s in saplings
+                        submit(pool, _slice_and_reconfigure_tree, **s) for s in saplings
                     ]
                     forest = [f.result() for f in forest_futures]
                     res = [{"tree": t, **_get_tree_info(t)} for t in forest]
 
                 else:
                     forest_futures = [
-                        submit(pool, _slice_and_reconfigure_tree, **s)
-                        for s in saplings
+                        submit(pool, _slice_and_reconfigure_tree, **s) for s in saplings
                     ]
 
                     # compute scores remotely then gather
@@ -2446,9 +2429,7 @@ class ContractionTree:
                     ]
                     res = [
                         {"tree": tree_future, **res_future.result()}
-                        for tree_future, res_future in zip(
-                            forest_futures, res_futures
-                        )
+                        for tree_future, res_future in zip(forest_futures, res_futures)
                     ]
 
                 # we want to sort by flops, but also favour sampling as
@@ -2456,9 +2437,7 @@ class ContractionTree:
                 #    ~ [1, 1, 1, 2, 2, 3] -> [1, 2, 3, 1, 2, 1]
                 res.sort(key=score)
                 res = list(
-                    interleave(
-                        groupby(lambda r: r["sliced_ind_set"], res).values()
-                    )
+                    interleave(groupby(lambda r: r["sliced_ind_set"], res).values())
                 )
 
                 # update the order of the new forest
@@ -2651,9 +2630,7 @@ class ContractionTree:
         rtree.contraction_cores.clear()
         return rtree
 
-    windowed_reconfigure_ = functools.partialmethod(
-        windowed_reconfigure, inplace=True
-    )
+    windowed_reconfigure_ = functools.partialmethod(windowed_reconfigure, inplace=True)
 
     def flat_tree(self, order=None):
         """Create a nested tuple representation of the contraction tree like::
@@ -2689,9 +2666,7 @@ class ContractionTree:
             raise ValueError("Can't order the leaves until tree is complete.")
 
         return tuple(
-            nd
-            for nd in itertools.chain.from_iterable(self.traverse())
-            if len(nd) == 1
+            nd for nd in itertools.chain.from_iterable(self.traverse()) if len(nd) == 1
         )
 
     def get_path(self, order=None):
@@ -2786,9 +2761,7 @@ class ContractionTree:
     def get_path_surface(self):
         return self.get_path(order=self.surface_order)
 
-    path_surface = deprecated(
-        get_path_surface, "path_surface", "get_path_surface"
-    )
+    path_surface = deprecated(get_path_surface, "path_surface", "get_path_surface")
 
     def get_ssa_path_surface(self):
         return self.get_ssa_path(order=self.surface_order)
@@ -2948,13 +2921,9 @@ class ContractionTree:
             self.reset_contraction_indices()
 
         if priority == "flops":
-            nodes = sorted(
-                self.children.items(), key=lambda x: self.get_flops(x[0])
-            )
+            nodes = sorted(self.children.items(), key=lambda x: self.get_flops(x[0]))
         elif priority == "size":
-            nodes = sorted(
-                self.children.items(), key=lambda x: self.get_size(x[0])
-            )
+            nodes = sorted(self.children.items(), key=lambda x: self.get_size(x[0]))
         elif priority == "root":
             nodes = ((p, (l, r)) for p, l, r in self.traverse())
         elif priority == "leaves":
@@ -3052,9 +3021,7 @@ class ContractionTree:
 
             # print sizes and flops
             p_flops = self.get_flops(p)
-            p_sz, l_sz, r_sz = (
-                math.log2(self.get_size(node)) for node in [p, l, r]
-            )
+            p_sz, l_sz, r_sz = (math.log2(self.get_size(node)) for node in [p, l, r])
             # print whether tensordottable
             if self.get_can_dot(p):
                 type_msg = "tensordot"
@@ -3074,11 +3041,15 @@ class ContractionTree:
 
             pa = (
                 "".join(
-                    PINK + f"{hyp_brck_l}{ix}{hyp_brck_r}"
-                    if (ix in l_legs) and (ix in r_legs)
-                    else GREEN + f"{kpt_brck_l}{ix}{kpt_brck_r}"
-                    if ix in r_legs
-                    else BLUE + ix
+                    (
+                        PINK + f"{hyp_brck_l}{ix}{hyp_brck_r}"
+                        if (ix in l_legs) and (ix in r_legs)
+                        else (
+                            GREEN + f"{kpt_brck_l}{ix}{kpt_brck_r}"
+                            if ix in r_legs
+                            else BLUE + ix
+                        )
+                    )
                     for ix in p_inds
                 )
                 .replace(f"){GREEN}(", "")
@@ -3086,11 +3057,15 @@ class ContractionTree:
             )
             la = (
                 "".join(
-                    PINK + f"{hyp_brck_l}{ix}{hyp_brck_r}"
-                    if (ix in p_legs) and (ix in r_legs)
-                    else RED + f"{con_brck_l}{ix}{con_brck_r}"
-                    if ix in r_legs
-                    else BLUE + ix
+                    (
+                        PINK + f"{hyp_brck_l}{ix}{hyp_brck_r}"
+                        if (ix in p_legs) and (ix in r_legs)
+                        else (
+                            RED + f"{con_brck_l}{ix}{con_brck_r}"
+                            if ix in r_legs
+                            else BLUE + ix
+                        )
+                    )
                     for ix in l_inds
                 )
                 .replace(f"]{RED}[", "")
@@ -3098,11 +3073,15 @@ class ContractionTree:
             )
             ra = (
                 "".join(
-                    PINK + f"{hyp_brck_l}{ix}{hyp_brck_r}"
-                    if (ix in p_legs) and (ix in l_legs)
-                    else RED + f"{con_brck_l}{ix}{con_brck_r}"
-                    if ix in l_legs
-                    else GREEN + ix
+                    (
+                        PINK + f"{hyp_brck_l}{ix}{hyp_brck_r}"
+                        if (ix in p_legs) and (ix in l_legs)
+                        else (
+                            RED + f"{con_brck_l}{ix}{con_brck_r}"
+                            if ix in l_legs
+                            else GREEN + ix
+                        )
+                    )
                     for ix in r_inds
                 )
                 .replace(f"]{RED}[", "")
@@ -3307,9 +3286,7 @@ class ContractionTree:
 
         for c in self.sliced_inputs:
             # the indexing object, e.g. [:, :, 7, :, 2, :, :, 0]
-            selector = tuple(
-                locations.get(ix, slice(None)) for ix in self.inputs[c]
-            )
+            selector = tuple(locations.get(ix, slice(None)) for ix in self.inputs[c])
             # re-insert the sliced array
             temp_arrays[c] = temp_arrays[c][selector]
 
@@ -3351,9 +3328,7 @@ class ContractionTree:
         if isinstance(next(iter(chunks.values())), tuple):
             # have stripped exponents, need to scale to largest
             emax = max(v[1] for v in chunks.values())
-            chunks = {
-                k: mi * 10 ** (ei - emax) for k, (mi, ei) in chunks.items()
-            }
+            chunks = {k: mi * 10 ** (ei - emax) for k, (mi, ei) in chunks.items()}
         else:
             emax = None
 
@@ -3376,9 +3351,7 @@ class ContractionTree:
 
         return result
 
-    def gen_output_chunks(
-        self, arrays, with_key=False, progbar=False, **contract_opts
-    ):
+    def gen_output_chunks(self, arrays, with_key=False, progbar=False, **contract_opts):
         """Generate each output chunk of the contraction - i.e. take care of
         summing internally sliced indices only first. This assumes that the
         ``sliced_inds`` are sorted by whether they appear in the output or not
@@ -3405,9 +3378,7 @@ class ContractionTree:
         """
         # consecutive slices of size ``stepsize`` all belong to the same output
         # block because the sliced indices are sorted output first
-        stepsize = prod(
-            si.size for si in self.sliced_inds.values() if si.inner
-        )
+        stepsize = prod(si.size for si in self.sliced_inds.values() if si.inner)
 
         if progbar:
             import tqdm
@@ -3631,9 +3602,7 @@ class ContractionTree:
 
         from .utils import make_arrays_from_inputs
 
-        arrays = make_arrays_from_inputs(
-            self.inputs, self.size_dict, dtype=dtype
-        )
+        arrays = make_arrays_from_inputs(self.inputs, self.size_dict, dtype=dtype)
 
         for i in range(int(warmup)):
             self.contract_slice(arrays, i % self.nslices, **contract_opts)
@@ -3944,8 +3913,9 @@ class PartitionTreeBuilder:
         seed=None,
         **partition_opts,
     ):
+        print("building kahypar trial fn with optimizers:", sub_optimize, super_optimize)
         tree = ContractionTree(inputs, output, size_dict, track_childless=True)
-
+        # print("running kahypar partition")
         rng = get_rng(seed)
         rand_size_dict = jitter_dict(size_dict, random_strength, rng)
 
@@ -3964,9 +3934,9 @@ class PartitionTreeBuilder:
             tree_node = next(iter(tree.childless))
             subgraph = tuple(tree_node)
             subsize = len(subgraph)
-
             # skip straight to better method
             if subsize <= cutoff:
+                print("using greedy")
                 tree.contract_nodes(
                     [node_from_single(x) for x in subgraph],
                     optimize=sub_optimize,
@@ -4010,9 +3980,7 @@ class PartitionTreeBuilder:
             # divide subgraph up e.g. if we enumerate the subgraph index sets
             # (0, 1, 2, 3, 4, 5, 6, 7, 8, ...) ->
             # ({0, 1, 3, 5, 6}, {2, 4}, {7, 8})
-            new_subgs = tuple(
-                map(node_from_seq, separate(subgraph, membership))
-            )
+            new_subgs = tuple(map(node_from_seq, separate(subgraph, membership)))
 
             if len(new_subgs) == 1:
                 # no communities found - contract all remaining
@@ -4023,10 +3991,9 @@ class PartitionTreeBuilder:
                 )
                 continue
 
+            # print("large subgraph, using auto")
             # update tree structure with newly contracted subgraphs
-            tree.contract_nodes(
-                new_subgs, optimize=super_optimize, check=check
-            )
+            tree.contract_nodes(new_subgs, optimize=super_optimize, check=check)
 
         if check:
             assert tree.is_complete()
@@ -4076,8 +4043,8 @@ class PartitionTreeBuilder:
 
         return tree
 
-    def trial_fn(self, inputs, output, size_dict, **partition_opts):
-        return self.build_divide(inputs, output, size_dict, **partition_opts)
+    def trial_fn(self, inputs, output, size_dict, optimizer, **partition_opts):
+        return self.build_divide(inputs, output, size_dict, super_optimize=optimizer, **partition_opts)
 
     def trial_fn_agglom(self, inputs, output, size_dict, **partition_opts):
         return self.build_agglom(inputs, output, size_dict, **partition_opts)

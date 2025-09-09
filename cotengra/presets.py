@@ -49,22 +49,25 @@ class AutoOptimizer(PathOptimizer):
 
     def __init__(
         self,
+        contraction_info,
         optimal_cutoff=250,
-        minimize="combo",
+        minimize="custom",
         cache=True,
         **hyperoptimizer_kwargs,
     ):
         self.minimize = minimize
         self.optimal_cutoff = optimal_cutoff
         self._optimize_optimal_fn = get_optimize_optimal()
-
+        self.contraction_info = contraction_info
+        print("auto optimizer minimize is: ", minimize)
         self.kwargs = hyperoptimizer_kwargs
         self.kwargs.setdefault("methods", ("random-greedy",))
         self.kwargs.setdefault("max_repeats", 128)
         self.kwargs.setdefault("max_time", "rate:1e9")
         self.kwargs.setdefault("optlib", get_default_optlib_eco())
         self.kwargs.setdefault("parallel", False)
-        # self.kwargs.setdefault("reconf_opts", {})
+        self.kwargs.setdefault("reconf_opts", {})
+        self.kwargs.setdefault("on_trial_error", "raise")
         # self.kwargs["reconf_opts"].setdefault("subtree_size", 4)
         # self.kwargs["reconf_opts"].setdefault("maxiter", 100)
 
@@ -75,6 +78,8 @@ class AutoOptimizer(PathOptimizer):
         else:
 
             self._optimizer_hyper_cls = HyperOptimizer
+        print("creating auto optimizer with the following params: ", self.minimize, self.kwargs, self._optimizer_hyper_cls)
+        print("contraction info: ", self.contraction_info)
 
     def _get_optimizer_hyper_threadsafe(self):
         # since the hyperoptimizer is stateful while running,
@@ -83,20 +88,20 @@ class AutoOptimizer(PathOptimizer):
         try:
             return self._hyperoptimizers_by_thread[tid]
         except KeyError:
-   
-            opt = self._optimizer_hyper_cls(
-                minimize=self.minimize, **self.kwargs
-            )
+
+            opt = self._optimizer_hyper_cls(minimize=self.minimize, **self.kwargs)
             self._hyperoptimizers_by_thread[tid] = opt
             return opt
 
     def search(self, inputs, output, size_dict, **kwargs):
         if estimate_optimal_hardness(inputs) < self.optimal_cutoff:
             # easy to solve exactly
+            print("easy to solve, using optimal")
             ssa_path = self._optimize_optimal_fn(
                 inputs,
                 output,
                 size_dict,
+                self.contraction_info,
                 use_ssa=True,
                 minimize=self.minimize,
                 **kwargs,
@@ -121,18 +126,21 @@ class AutoOptimizer(PathOptimizer):
         # traceback.print_stack()
 
         if estimate_optimal_hardness(inputs) < self.optimal_cutoff:
+            print("easy  to solve, no hyper needed")
+            print("inputs are: ", inputs)
             # easy to solve exactly
             return self._optimize_optimal_fn(
                 inputs,
                 output,
                 size_dict,
+                self.contraction_info,
                 use_ssa=False,
                 minimize=self.minimize,
                 **kwargs,
             )
         else:
             # use hyperoptimizer
-        
+            # print("hard to solve, using hyperoptimizer")
             return self._get_optimizer_hyper_threadsafe()(
                 inputs, output, size_dict, **kwargs
             )
@@ -152,7 +160,7 @@ class AutoHQOptimizer(AutoOptimizer):
         kwargs.setdefault("max_time", "rate:1e8")
         kwargs.setdefault("optlib", get_default_optlib())
         kwargs.setdefault("parallel", False)
-        # kwargs.setdefault("reconf_opts", {})
+        kwargs.setdefault("reconf_opts", {})
         # kwargs["reconf_opts"].setdefault("subtree_size", 8)
         # kwargs["reconf_opts"].setdefault("maxiter", 500)
         super().__init__(**kwargs)
@@ -195,6 +203,7 @@ def auto_optimize_hq_tree(inputs, output, size_dict, **kwargs):
 def set_auto_optimize(opt):
     auto_hq_optimize = opt
 
+
 # these names overlap with opt_einsum, but won't override presets there
 register_preset(
     "auto",
@@ -225,9 +234,7 @@ register_preset(
 
 optimal_outer_optimize = OptimalOptimizer(search_outer=True)
 
-register_preset(
-    "optimal-outer", optimal_outer_optimize, optimal_outer_optimize.search
-)
+register_preset("optimal-outer", optimal_outer_optimize, optimal_outer_optimize.search)
 
 edgesort_optimize = EdgeSortOptimizer()
 
