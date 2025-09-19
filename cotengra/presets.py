@@ -49,7 +49,7 @@ class AutoOptimizer(PathOptimizer):
 
     def __init__(
         self,
-        optimal_cutoff=250,
+        optimal_cutoff=100,
         minimize="combo",
         cache=True,
         **hyperoptimizer_kwargs,
@@ -64,10 +64,11 @@ class AutoOptimizer(PathOptimizer):
         self.kwargs.setdefault("max_time", "rate:1e9")
         self.kwargs.setdefault("optlib", get_default_optlib_eco())
         self.kwargs.setdefault("parallel", False)
-        # self.kwargs.setdefault("reconf_opts", {})
-        # self.kwargs["reconf_opts"].setdefault("subtree_size", 4)
-        # self.kwargs["reconf_opts"].setdefault("maxiter", 100)
+        self.kwargs.setdefault("reconf_opts", {})
+        self.kwargs["reconf_opts"].setdefault("subtree_size", 4)
+        self.kwargs["reconf_opts"].setdefault("maxiter", 100)
 
+        self.kwargs["on_trial_error"] = "raise"
         self._hyperoptimizers_by_thread = {}
         if cache:
 
@@ -90,13 +91,14 @@ class AutoOptimizer(PathOptimizer):
             self._hyperoptimizers_by_thread[tid] = opt
             return opt
 
-    def search(self, inputs, output, size_dict, **kwargs):
+    def search(self, inputs, output, size_dict, search_params, **kwargs):
         if estimate_optimal_hardness(inputs) < self.optimal_cutoff:
             # easy to solve exactly
             ssa_path = self._optimize_optimal_fn(
                 inputs,
                 output,
                 size_dict,
+                search_params,
                 use_ssa=True,
                 minimize=self.minimize,
                 **kwargs,
@@ -105,6 +107,7 @@ class AutoOptimizer(PathOptimizer):
                 inputs,
                 output,
                 size_dict,
+                search_params,
                 ssa_path=ssa_path,
             )
         else:
@@ -113,28 +116,31 @@ class AutoOptimizer(PathOptimizer):
                 inputs,
                 output,
                 size_dict,
+                search_params,
                 **kwargs,
             )
 
-    def __call__(self, inputs, output, size_dict, **kwargs):
+    def __call__(self, inputs, output, size_dict, search_params, **kwargs):
         # print("CALLED __call__ FROM:")
         # traceback.print_stack()
 
         if estimate_optimal_hardness(inputs) < self.optimal_cutoff:
             # easy to solve exactly
+            print("running optinal with search params:", search_params)
+
             return self._optimize_optimal_fn(
                 inputs,
                 output,
                 size_dict,
+                search_params,
                 use_ssa=False,
                 minimize=self.minimize,
                 **kwargs,
             )
         else:
             # use hyperoptimizer
-        
             return self._get_optimizer_hyper_threadsafe()(
-                inputs, output, size_dict, **kwargs
+                inputs, output, size_dict, search_params, **kwargs
             )
 
 
@@ -146,15 +152,15 @@ class AutoHQOptimizer(AutoOptimizer):
     """
 
     def __init__(self, **kwargs):
-        kwargs.setdefault("optimal_cutoff", 650)
+        kwargs.setdefault("optimal_cutoff", 450)
         kwargs.setdefault("methods", get_default_hq_methods())
         kwargs.setdefault("max_repeats", 128)
         kwargs.setdefault("max_time", "rate:1e8")
         kwargs.setdefault("optlib", get_default_optlib())
         kwargs.setdefault("parallel", False)
-        # kwargs.setdefault("reconf_opts", {})
-        # kwargs["reconf_opts"].setdefault("subtree_size", 8)
-        # kwargs["reconf_opts"].setdefault("maxiter", 500)
+        kwargs.setdefault("reconf_opts", {})
+        kwargs["reconf_opts"].setdefault("subtree_size", 8)
+        kwargs["reconf_opts"].setdefault("maxiter", 500)
         super().__init__(**kwargs)
 
 
@@ -181,15 +187,15 @@ def get_auto_hq_optimizer():
     return AutoHQOptimizer()
 
 
-def auto_hq_optimize(inputs, output, size_dict, **kwargs):
+def auto_hq_optimize(inputs, output, size_dict, contraction_info=None, **kwargs):
     optimizer = get_auto_hq_optimizer()
-    return optimizer(inputs, output, size_dict, **kwargs)
+    return optimizer(inputs, output, size_dict, contraction_info, **kwargs)
 
 
-def auto_optimize_hq_tree(inputs, output, size_dict, **kwargs):
+def auto_optimize_hq_tree(inputs, output, size_dict, contraction_info=None, **kwargs):
     """Get a contraction tree using the auto optimizer."""
     optimizer = get_auto_hq_optimizer()
-    return optimizer.search(inputs, output, size_dict, **kwargs)
+    return optimizer.search(inputs, output, size_dict, contraction_info, **kwargs)
 
 
 def set_auto_optimize(opt):

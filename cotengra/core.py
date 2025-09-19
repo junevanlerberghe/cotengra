@@ -1340,6 +1340,7 @@ class ContractionTree:
     def contract_nodes(
         self,
         nodes,
+        search_params={},
         optimize="auto-hq",
         check=False,
         extra_opts=None,
@@ -1373,10 +1374,14 @@ class ContractionTree:
         path_inputs = [tuple(self.get_legs(x)) for x in nodes]
         path_output = tuple(self.get_legs(grandparent))
 
+        print("finding path with optimize ", optimize)
+        # if(optimize != "greedy" and optimize is not None):
+        #     print("optimizer minimize is: ", optimize.minimize)
         path = find_path(
             path_inputs,
             path_output,
             self.size_dict,
+            search_params,
             optimize=optimize,
             **(extra_opts or {}),
         )
@@ -1794,6 +1799,7 @@ class ContractionTree:
 
     def subtree_reconfigure(
         self,
+        contraction_info=None,
         subtree_size=8,
         subtree_search="bfs",
         weight_what="flops",
@@ -1852,7 +1858,7 @@ class ContractionTree:
         ContractionTree
         """
         tree = self if inplace else self.copy()
-
+        # print("reconfiguring subtree")
         # ensure these have been computed and thus are being tracked
         tree.contract_stats()
 
@@ -1864,13 +1870,14 @@ class ContractionTree:
             from .pathfinders.path_basic import OptimalOptimizer
 
             opt = OptimalOptimizer(
+                contraction_info=contraction_info,
                 minimize=scorer.get_dynamic_programming_minimize()
             )
         else:
             opt = optimize
 
         node_cost = getattr(scorer, "cost_local_tree_node", lambda _: 2)
-
+        print("node cost is: ", node_cost)
         # different caches as we might want to reconfigure one before other
         tree.already_optimized.setdefault(minimize, set())
         already_optimized = tree.already_optimized[minimize]
@@ -1913,10 +1920,11 @@ class ContractionTree:
                 # check if its already been optimized
                 if sub_leaves in already_optimized:
                     continue
-
+                print("running node cost for: ", tree, sub_root)
                 # else remove the branches, keeping track of current cost
                 current_cost = node_cost(tree, sub_root)
                 for node in sub_branches:
+                    print("running node cost for: ", tree, node)
                     if minimize == "size":
                         current_cost = max(current_cost, node_cost(tree, node))
                     else:
@@ -1940,13 +1948,17 @@ class ContractionTree:
                 candidates, weights = tree.calc_subtree_candidates(
                     pwr=weight_pwr, what=weight_what
                 )
+        except Exception as e:
+            print(f"Exception inside reconfiguration loop at r={r}, candidates_len={len(candidates) if candidates is not None else 'N/A'}")
+            print(e)
+            raise
         finally:
             if progbar:
                 pbar.close()
 
         # invalidate any compiled contractions
         tree.contraction_cores.clear()
-
+        print("returning tree: ", tree)
         return tree
 
     subtree_reconfigure_ = functools.partialmethod(
@@ -3934,6 +3946,7 @@ class PartitionTreeBuilder:
         inputs,
         output,
         size_dict,
+        search_params,
         random_strength=0.01,
         cutoff=10,
         parts=2,
@@ -3946,6 +3959,8 @@ class PartitionTreeBuilder:
     ):
         tree = ContractionTree(inputs, output, size_dict, track_childless=True)
 
+        super_optimize = search_params.get("sub_optimize_minimizer", super_optimize)
+        
         rng = get_rng(seed)
         rand_size_dict = jitter_dict(size_dict, random_strength, rng)
 
@@ -3969,6 +3984,7 @@ class PartitionTreeBuilder:
             if subsize <= cutoff:
                 tree.contract_nodes(
                     [node_from_single(x) for x in subgraph],
+                    search_params,
                     optimize=sub_optimize,
                     check=check,
                 )
@@ -4018,14 +4034,16 @@ class PartitionTreeBuilder:
                 # no communities found - contract all remaining
                 tree.contract_nodes(
                     tuple(map(node_from_single, subgraph)),
+                    search_params,
                     optimize=sub_optimize,
                     check=check,
                 )
                 continue
 
             # update tree structure with newly contracted subgraphs
+            print("using super optimize!, it is: ", super_optimize)
             tree.contract_nodes(
-                new_subgs, optimize=super_optimize, check=check
+                new_subgs, search_params, optimize=super_optimize, check=check
             )
 
         if check:
@@ -4076,8 +4094,9 @@ class PartitionTreeBuilder:
 
         return tree
 
-    def trial_fn(self, inputs, output, size_dict, **partition_opts):
-        return self.build_divide(inputs, output, size_dict, **partition_opts)
+    def trial_fn(self, inputs, output, size_dict, search_params, **partition_opts):
+        print("trial funcion called with search params: ", search_params)
+        return self.build_divide(inputs, output, size_dict, search_params, **partition_opts)
 
     def trial_fn_agglom(self, inputs, output, size_dict, **partition_opts):
         return self.build_agglom(inputs, output, size_dict, **partition_opts)

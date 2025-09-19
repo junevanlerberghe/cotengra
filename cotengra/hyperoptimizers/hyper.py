@@ -125,8 +125,8 @@ def list_hyper_functions():
     return sorted(_PATH_FNS)
 
 
-def base_trial_fn(inputs, output, size_dict, method, **kwargs):
-    tree = _PATH_FNS[method](inputs, output, size_dict, **kwargs)
+def base_trial_fn(inputs, output, size_dict, search_params, method, **kwargs):
+    tree = _PATH_FNS[method](inputs, output, size_dict, search_params, **kwargs)
     return {"tree": tree}
 
 
@@ -236,7 +236,7 @@ class ReconfTrialFn:
                 parallel=self.parallel, **self.opts
             )
         else:
-            tree.subtree_reconfigure_(**self.opts)
+            tree.subtree_reconfigure_(minimize="flops", **self.opts)
 
         tree.already_optimized.clear()
         trial.update(tree.contract_stats())
@@ -536,7 +536,7 @@ class HyperOptimizer(PathOptimizer):
     def path(self):
         return self.tree.get_path()
 
-    def setup(self, inputs, output, size_dict):
+    def setup(self, inputs, output, size_dict, search_params):
         trial_fn = TrialSetObjective(base_trial_fn, self.objective)
 
         if self.compressed:
@@ -567,7 +567,6 @@ class HyperOptimizer(PathOptimizer):
             if self.compressed:
                 trial_fn = CompressedReconfTrial(trial_fn, **self.reconf_opts)
             else:
-                print("reconf options are not none, : ", self.reconf_opts)
                 self.reconf_opts.setdefault("parallel", nested_parallel)
                 trial_fn = ReconfTrialFn(trial_fn, **self.reconf_opts)
 
@@ -581,7 +580,7 @@ class HyperOptimizer(PathOptimizer):
             on_trial_error=self.on_trial_error,
         )
 
-        return trial_fn, (inputs, output, size_dict)
+        return trial_fn, (inputs, output, size_dict, search_params)
 
     def _maybe_cancel_futures(self):
         if self._pool is not None:
@@ -625,6 +624,7 @@ class HyperOptimizer(PathOptimizer):
         for _ in repeats:
             setting = self._optimizer["get_setting"](self)
             method = setting["method"]
+            
 
             trial = trial_fn(
                 *trial_args,
@@ -673,7 +673,7 @@ class HyperOptimizer(PathOptimizer):
         while self._futures:
             yield self._get_and_report_next_future()
 
-    def _search(self, inputs, output, size_dict):
+    def _search(self, inputs, output, size_dict, search_params):
         # start a timer?
         if self.max_time is not None:
             t0 = time.time()
@@ -704,7 +704,8 @@ class HyperOptimizer(PathOptimizer):
             def should_stop():
                 return False
 
-        trial_fn, trial_args = self.setup(inputs, output, size_dict)
+        trial_fn, trial_args = self.setup(inputs, output, size_dict, search_params)
+        
         r_start = self._repeats_start + len(self.scores)
         r_stop = r_start + self.max_repeats
         repeats = range(r_start, r_stop)
@@ -725,10 +726,13 @@ class HyperOptimizer(PathOptimizer):
             trials = pbar
 
         # assess the trials
+        count = 0
         # print("about to loop through trials, # = ", len(trials))
         for trial in trials:
             # check if we have found a new best
-  
+            print("---------------------------------")
+            print("DONE RUNNING TRIAL: ", trial)
+            count += 1
             if trial["score"] < self.best["score"]:
                 self.trials_since_best = 0
                 self.best = trial
@@ -755,14 +759,16 @@ class HyperOptimizer(PathOptimizer):
         
         self._maybe_cancel_futures()
 
-    def search(self, inputs, output, size_dict):
+    def search(self, inputs, output, size_dict, search_params={}):
         """Run this optimizer and return the ``ContractionTree`` for the best
         path it finds.
         """
+        print("search with params: ", search_params)
         self._search(
             inputs,
             output,
             size_dict,
+            search_params
         )
         return self.tree
 
@@ -770,12 +776,13 @@ class HyperOptimizer(PathOptimizer):
         """Return the ``ContractionTree`` for the best path found."""
         return self.tree
 
-    def __call__(self, inputs, output, size_dict, memory_limit=None):
+    def __call__(self, inputs, output, size_dict, search_params={}, memory_limit=None):
         """``opt_einsum`` interface, returns direct ``path``."""
         self._search(
             inputs,
             output,
             size_dict,
+            search_params
         )
         return tuple(self.path)
 

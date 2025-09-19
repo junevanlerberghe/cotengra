@@ -2,30 +2,18 @@
 
 import ast
 import bisect
+from collections import defaultdict
+from copy import deepcopy
 import functools
 import heapq
 import itertools
 import math
-import re
-from typing import Iterable, List, Set, Tuple
-
-from galois import GF2
-import numpy as np
-import scipy
-
-from planqtn.parity_check import _normalize_emtpy_matrices_to_zero
 
 from ..core import ContractionTree
 from ..oe import PathOptimizer
 from ..parallel import get_n_workers, parse_parallel_arg
 from ..reusable import ReusableOptimizer
 from ..utils import GumbelBatchedGenerator, get_rng
-
-from planqtn.stabilizer_tensor_enumerator import (
-    StabilizerCodeTensorEnumerator,
-    _index_leg,
-    _index_legs,
-)
 
 
 def is_simplifiable(legs, appearances):
@@ -68,7 +56,7 @@ def compute_simplified(legs, appearances):
     return new_legs
 
 
-def compute_contracted(ilegs, jlegs, appearances):
+def compute_contracted(ilegs, jlegs, appearances, reverse_map=None, contraction_info=None):
     """Compute the contracted legs of two terms."""
     # do sorted simultaneous iteration over ilegs and jlegs
     ip = 0
@@ -76,6 +64,7 @@ def compute_contracted(ilegs, jlegs, appearances):
     ni = len(ilegs)
     nj = len(jlegs)
     new_legs = []
+    new_traces = []
     while True:
         if ip == ni:
             # all remaining legs are from j
@@ -101,10 +90,15 @@ def compute_contracted(ilegs, jlegs, appearances):
             ijc = ic + jc
             if ijc != appearances[iix]:
                 new_legs.append((iix, ijc))
+            # print("shared index found: ", iix)
+            # print("reverse map and contraction info are: ", reverse_map, contraction_info)
+            if reverse_map is not None and contraction_info is not None:
+                (node_idx1, leg1), (node_idx2, leg2) = contraction_info.index_to_legs[reverse_map[iix]]
+                new_traces.append((node_idx1, node_idx2, leg1, leg2))
             ip += 1
             jp += 1
 
-    return new_legs
+    return new_legs, new_traces
 
 
 def compute_size(legs, sizes):
@@ -127,331 +121,217 @@ def compute_flops(ilegs, jlegs, sizes):
             flops *= sizes[ix]
     return flops
 
-def _generate_all_stabilizers(tn, generators):
-    """
-    Given k x 2n binary matrix (symplectic form),
-    return all 2^k binary symplectic Pauli vectors (as numpy array).
-    
-    Each row in the output is a 2n vector: [x0, ..., xn-1, z0, ..., zn-1]
-    """
-    basis = np.array(GF2(generators).row_space())
-    r, n2 = basis.shape
-    stabilizers = np.zeros((2**r, n2), dtype=int)
-    for i, bits in enumerate(product([0, 1], repeat=r)):
-        combo = np.zeros(n2, dtype=int)
-        for j, b in enumerate(bits):
-            if b:
-                combo ^= basis[j]  # GF(2) addition
-        stabilizers[i] = combo
-    return stabilizers
+def group_traces_with_order(traces):
+    parent = {}  # union-find parent
+    cluster_traces = {}  # cluster rep -> list of traces
+    cluster_nodes = {}   # cluster rep -> set of nodes
 
+    def find(x):
+        if x not in parent:
+            parent[x] = x
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
 
-def _count_matching_stabilizers_by_enumeration(tn, H):
-    stabilizers = tn._generate_all_stabilizers(H)
-    count = 0
-    n = H.shape[1] // 2
-    for stab in stabilizers:
-        x = stab[:n]
-        z = stab[n:]
-        x0, x1 = x[0], x[1]
-        z0, z1 = z[0], z[1]
-        if (x0 == x1) and (z0 == z1):
-            count += 1
-    return count / len(stabilizers)
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx == ry:
+            return rx
+        # Merge ry into rx
+        parent[ry] = rx
+        # Merge traces
+        cluster_traces[rx].extend(cluster_traces[ry])
+        cluster_nodes[rx].update(cluster_nodes[ry])
+        del cluster_traces[ry]
+        del cluster_nodes[ry]
+        return rx
 
+    # Initialize clusters
+    for node in {node for trace in traces for node in trace[:2]}:
+        rep = find(node)
+        cluster_traces[rep] = []
+        cluster_nodes[rep] = {node}
 
-def _get_rank_for_matrix_legs(tn, pte, open_legs):
-    open_legs_set = set(open_legs)
-    open_leg_indices = [i for i, leg in enumerate(pte.legs) if leg in open_legs_set]
-    open_leg_indices += [i + (pte.h.shape[1]//2) for i, leg in enumerate(pte.legs) if leg in open_legs_set]
-    open_leg_submatrix = pte.h[:, open_leg_indices]
-    return  rank(open_leg_submatrix)
-
-
-def find_rank_cost(node, tn, ptes, node_to_pte, traceable_legs):
-    # node is either '((1, 3), 1)' or '((1, 3), 1)_((0,1), 1)'
-    # i want just the second version and extract the two parts
-    if "_" in node:
-        join_leg1, join_leg2 = node.split("_", 1)
-        inner_tuples = re.findall(r'\(\((\d+,\s*\d+)\),\s*\d+\)', node)
-        node_idx1 = ast.literal_eval(join_leg1)[0]
-        node_idx2 = ast.literal_eval(join_leg2)[0]
-
-
-        join_leg1 = ast.literal_eval(join_leg1)
-        join_leg2 = ast.literal_eval(join_leg2)
-        join_legs1 = _index_legs(node_idx1, [join_leg1])
-        join_legs2 = _index_legs(node_idx2, [join_leg2])
-
-        pte1_idx = node_to_pte.get(node_idx1)
-        pte2_idx = node_to_pte.get(node_idx2)
-
-
-        if pte1_idx == pte2_idx:
-            pte, nodes = ptes[pte1_idx]
-
-            new_pte = pte.self_trace(join_legs1, join_legs2)
-            ptes[pte1_idx] = (new_pte, nodes)
-
-            new_traceable_legs = [
-                leg
-                for leg in traceable_legs[node_idx1]
-                if leg not in join_legs1 and leg not in join_legs2
-            ]
-
-            for node in nodes:
-                traceable_legs[node] = new_traceable_legs
-
-            prev_rank_submatrix = tn._get_rank_for_matrix_legs(pte, new_traceable_legs + join_legs1 + join_legs2)
-
-            join_idxs = [i for i, leg in enumerate(pte.legs) if leg in join_legs2]
-            join_idxs += [i + (pte.h.shape[1]//2) for i, leg in enumerate(pte.legs) if leg in join_legs2]
-            join_idxs2 = [i for i, leg in enumerate(pte.legs) if leg in join_legs1]
-            join_idxs2 += [i + (pte.h.shape[1]//2) for i, leg in enumerate(pte.legs) if leg in join_legs1]
-            joined1 = pte.h[:, [join_idxs[0], join_idxs2[0], join_idxs[1], join_idxs2[1]]]
-            
-            matches = tn._count_matching_stabilizers_by_enumeration(joined1)
-            total_cost += 2**(prev_rank_submatrix) * matches
-
-        # Case 2: Nodes are in different PTEs - merge them
+    grouped = []
+    for trace in traces:
+        node1, node2, leg1, leg2 = trace
+        rep1, rep2 = find(node1), find(node2)
+        if rep1 != rep2:
+            # Merge clusters
+            merged_rep = union(rep1, rep2)
+            # Add the current trace after merging
+            cluster_traces[merged_rep].append(trace)
+            grouped.append((list(cluster_traces[merged_rep]), cluster_nodes[merged_rep].copy()))
         else:
-            pte1, nodes1 = ptes[pte1_idx]
-            pte2, nodes2 = ptes[pte2_idx]
+            # Same cluster, just append
+            cluster_traces[rep1].append(trace)
 
-            new_pte = pte1.conjoin(pte2, legs1=join_legs1, legs2=join_legs2)
+    return grouped
+
+
+def compute_size_custom(
+    tn, combined_traces
+):
+    print("RUNNING CUSTOM GREEDY!!!")
+    # print("combined traces are: ", combined_traces)
+
+    pte_list = list(tn.pte_list)
+    node_to_pte = dict(tn.node_to_pte)
+    
+    for traces in combined_traces:
+        # ensure traces is a sequence of 4-tuples
+        traces = list(traces)
+
+        # group traces by the PTE-pair they connect (frozenset of two pte indices)
+        groups = defaultdict(list)
+        for node_idx1, node_idx2, leg1, leg2 in traces:
+            p1 = node_to_pte[node_idx1]
+            p2 = node_to_pte[node_idx2]
+            key = frozenset({p1, p2})
+            groups[key].append((node_idx1, node_idx2, leg1, leg2))
+
+        # now process each group separately; each should connect exactly two PTE indices
+        for key, group_traces in groups.items():
+            pte_ids = set()
+            for node_idx1, node_idx2, _, _ in group_traces:
+                pte_ids.add(node_to_pte[node_idx1])
+                pte_ids.add(node_to_pte[node_idx2])
+
+            if len(pte_ids) != 2:
+                print("Warning: expected a pair of PTEs but got:", pte_ids)
+                continue
+
+            pte1_idx, pte2_idx = tuple(pte_ids)
+            join_legs1 = []
+            join_legs2 = []
+
+            node_join_legs = defaultdict(list)
+            
+            for node_idx1, node_idx2, leg1, leg2 in group_traces:
+                node_join_legs[node_idx1].append(leg1)
+                node_join_legs[node_idx2].append(leg2)
+
+                if node_idx1 in pte_list[pte1_idx][1]:
+                    join_legs1.append(leg1)
+                else:
+                    join_legs2.append(leg1)
+
+                if node_idx2 in pte_list[pte2_idx][1]:
+                    join_legs2.append(leg2)
+                else:
+                    join_legs1.append(leg2)
+
+            pte1, nodes1 = pte_list[pte1_idx]
+            pte2, nodes2 = pte_list[pte2_idx]
             merged_nodes = nodes1.union(nodes2)
+
+            new_pte = pte1.merge_with(
+                pte2, join_legs1, join_legs2
+            )
+
+            for node_idx in new_pte.node_ids:
+                node_to_pte[node_idx] = pte1_idx
+
             # Update the first PTE with merged result
-            ptes[pte1_idx] = (new_pte, merged_nodes)
+            pte_list[pte1_idx] = (new_pte, merged_nodes)
             # Remove the second PTE
-            ptes.pop(pte2_idx)
+            pte_list.pop(pte2_idx)
 
             # Update node_to_pte mappings
-            for node in nodes2:
-                node_to_pte[node] = pte1_idx
+            for node_idx in nodes2:
+                node_to_pte[node_idx] = pte1_idx
             # Adjust indices for all nodes in PTEs after the removed one
-            for node, pte_idx in node_to_pte.items():
+            for node_idx, pte_idx in node_to_pte.items():
                 if pte_idx > pte2_idx:
-                    node_to_pte[node] = pte_idx - 1
+                    node_to_pte[node_idx] = pte_idx - 1
 
-            new_traceable_legs = [
-                leg
-                for leg in traceable_legs[node_idx1]
-                if leg not in join_legs1 and leg not in join_legs2
-            ]
+    size = 2**new_pte.rank() # returning size of the newest pte
+    return size
 
-            new_traceable_legs += [
-                leg
-                for leg in traceable_legs[node_idx2]
-                if leg not in join_legs1 and leg not in join_legs2
-            ]
-            prev_submatrix1 = tn._get_rank_for_matrix_legs(pte1, traceable_legs[node_idx1])
-            prev_submatrix2 = tn._get_rank_for_matrix_legs(pte2, traceable_legs[node_idx2])
-
-            join_idxs2 = [i for i, leg in enumerate(pte2.legs) if leg in join_legs2]
-            join_idxs2 += [i + (pte2.h.shape[1]//2) for i, leg in enumerate(pte2.legs) if leg in join_legs2]
-            join_idxs = [i for i, leg in enumerate(pte1.legs) if leg in join_legs1]
-            join_idxs += [i + (pte1.h.shape[1]//2) for i, leg in enumerate(pte1.legs) if leg in join_legs1]
-            joined1 = pte1.h[:, join_idxs]
-            joined2 = pte2.h[:, join_idxs2]
-
-            tensor_prod = tensor_product(joined1, joined2)                
-            matches = tn._count_matching_stabilizers_by_enumeration(tensor_prod)
-            total_cost += (2**(prev_submatrix1 + prev_submatrix2)* matches)
-
-            for node in merged_nodes:
-                traceable_legs[node] = new_traceable_legs
-        return total_cost
-    
-def rank(mx):
-    return GF2(mx).row_space().shape[0]
-
-def tensor_product(h1: GF2, h2: GF2) -> GF2:
-    """Compute the tensor product of two parity check matrices.
-
-    Args:
-        h1: First parity check matrix
-        h2: Second parity check matrix
-
-    Returns:
-        The tensor product of h1 and h2 as a new parity check matrix
-    """
-    h1 = _normalize_emtpy_matrices_to_zero(h1)
-    h2 = _normalize_emtpy_matrices_to_zero(h2)
-
-    r1, n1 = h1.shape
-    r2, n2 = h2.shape
-    n1 //= 2
-    n2 //= 2
-
-    is_scalar_1 = n1 == 0
-    is_scalar_2 = n2 == 0
-
-    if is_scalar_1:
-        if h1[0][0] == 0:
-            return GF2([[0]])
-        return h2
-    if is_scalar_2:
-        if h2[0][0] == 0:
-            return GF2([[0]])
-        return h1
-
-    # if all the rows of h1 are zero and only has a single row, then this is a tensor of free qubits
-    if len(h1) == 1 and np.all(h1[0] == 0):
-        # then we'll just add n1 number of cols to h2 with zeros to each half of the matrix
-        return GF2(
-            np.hstack((np.zeros((r2, n1)), h2[:, :n2], np.zeros((r2, n1)), h2[:, n2:]))
-        )
-
-    # if all the rows of h2 are zero and only has a single row, then this is a tensor of free qubits
-    if len(h2) == 1 and np.all(h2[0] == 0):
-        # then we'll just add n2 number of cols to h1 with zeros to each half of the matrix
-        return GF2(
-            np.hstack((h1[:, :n1], np.zeros((r1, n2)), h1[:, n1:], np.zeros((r1, n2))))
-        )
-
-    h = GF2(
-        np.hstack(
-            (
-                # X
-                scipy.linalg.block_diag(h1[:, :n1], h2[:, :n2]),
-                # Z
-                scipy.linalg.block_diag(h1[:, n1:], h2[:, n2:]),
-            )
-        )
-    )
-
-    assert h.shape == (
-        r1 + r2,
-        2 * (n1 + n2),
-    ), f"{h.shape} != {(r1 + r2, 2 * (n1 + n2))}"
-
-    return h
 
 def compute_con_cost_custom(
-    temp_legs,
-    appearances,
-    sizes,
-    iscore,
-    jscore,
-    node_names,
-    tn,
-    open_legs_per_node
+    tn, combined_traces
 ):
-    print("running custom cost function on legs: ", temp_legs)
-    print("open legs per node: ", open_legs_per_node)
-    print("node_names: ", node_names)
+    from planqtn.symplectic import count_matching_stabilizers_ratio_all_pairs
+    print("RUNNING CUSTOM OPTIMAL!!!")
     cost = 0
-    traceable_legs = {}
-    for node_idx, legs in open_legs_per_node.items():
-        traceable_legs[node_idx] = legs
+    pte_list = list(tn.pte_list)
+    node_to_pte = dict(tn.node_to_pte)
 
-    # Map from node_idx to the index of its PTE in ptes list
-    nodes = list(tn.nodes.values())
-    ptes: List[Tuple[StabilizerCodeTensorEnumerator, Set[str]]] = [
-        (node, {node.tensor_id}) for node in nodes
-    ]
-    node_to_pte = {node.tensor_id: i for i, node in enumerate(nodes)}
-    for i in range(len(temp_legs) - 1, -1, -1):
-        ix, ix_count = temp_legs[i]
-        node = node_names[ix]
-        if ix_count == appearances[ix]:
-            # contracted index, remove
-            del temp_legs[i]
+    for traces in combined_traces:
+        # ensure traces is a sequence of 4-tuples
+        traces = list(traces)
 
-        # node is either '((1, 3), 1)' or '((1, 3), 1)_((0,1), 1)'
-        # i want just the second version and extract the two parts
-        if "_" in node:
-            join_leg1, join_leg2 = node.split("_", 1)
-            inner_tuples = re.findall(r'\(\((\d+,\s*\d+)\),\s*\d+\)', node)
-            node_idx1 = ast.literal_eval(join_leg1)[0]
-            node_idx2 = ast.literal_eval(join_leg2)[0]
+        # group traces by the PTE-pair they connect (frozenset of two pte indices)
+        groups = defaultdict(list)
+        for node_idx1, node_idx2, leg1, leg2 in traces:
+            p1 = node_to_pte[node_idx1]
+            p2 = node_to_pte[node_idx2]
+            key = frozenset({p1, p2})
+            groups[key].append((node_idx1, node_idx2, leg1, leg2))
 
+        # now process each group separately; each should connect exactly two PTE indices
+        for key, group_traces in groups.items():
+            pte_ids = set()
+            for node_idx1, node_idx2, _, _ in group_traces:
+                pte_ids.add(node_to_pte[node_idx1])
+                pte_ids.add(node_to_pte[node_idx2])
 
-            join_leg1 = ast.literal_eval(join_leg1)
-            join_leg2 = ast.literal_eval(join_leg2)
-            join_legs1 = _index_legs(node_idx1, [join_leg1])
-            join_legs2 = _index_legs(node_idx2, [join_leg2])
+            if len(pte_ids) != 2:
+                print("Warning: expected a pair of PTEs but got:", pte_ids)
+                continue
 
-            pte1_idx = node_to_pte.get(node_idx1)
-            pte2_idx = node_to_pte.get(node_idx2)
+            pte1_idx, pte2_idx = tuple(pte_ids)
+            join_legs1 = []
+            join_legs2 = []
 
+            node_join_legs = defaultdict(list)
+            
+            for node_idx1, node_idx2, leg1, leg2 in group_traces:
+                node_join_legs[node_idx1].append(leg1)
+                node_join_legs[node_idx2].append(leg2)
 
-            if pte1_idx == pte2_idx:
-                pte, nodes = ptes[pte1_idx]
+                if node_idx1 in pte_list[pte1_idx][1]:
+                    join_legs1.append(leg1)
+                else:
+                    join_legs2.append(leg1)
 
-                new_pte = pte.self_trace(join_legs1, join_legs2)
-                ptes[pte1_idx] = (new_pte, nodes)
+                if node_idx2 in pte_list[pte2_idx][1]:
+                    join_legs2.append(leg2)
+                else:
+                    join_legs1.append(leg2)
 
-                new_traceable_legs = [
-                    leg
-                    for leg in traceable_legs[node_idx1]
-                    if leg not in join_legs1 and leg not in join_legs2
-                ]
+            pte1, nodes1 = pte_list[pte1_idx]
+            pte2, nodes2 = pte_list[pte2_idx]
+            merged_nodes = nodes1.union(nodes2)
 
-                for node in nodes:
-                    traceable_legs[node] = new_traceable_legs
+            new_pte = pte1.merge_with(
+                pte2, join_legs1, join_legs2
+            )
 
-                prev_rank_submatrix = tn._get_rank_for_matrix_legs(pte, new_traceable_legs + join_legs1 + join_legs2)
+            for node_idx in new_pte.node_ids:
+                node_to_pte[node_idx] = pte1_idx
 
-                join_idxs = [i for i, leg in enumerate(pte.legs) if leg in join_legs2]
-                join_idxs += [i + (pte.h.shape[1]//2) for i, leg in enumerate(pte.legs) if leg in join_legs2]
-                join_idxs2 = [i for i, leg in enumerate(pte.legs) if leg in join_legs1]
-                join_idxs2 += [i + (pte.h.shape[1]//2) for i, leg in enumerate(pte.legs) if leg in join_legs1]
-                joined1 = pte.h[:, [join_idxs[0], join_idxs2[0], join_idxs[1], join_idxs2[1]]]
-                
-                matches = tn._count_matching_stabilizers_by_enumeration(joined1)
-                cost += 2**(prev_rank_submatrix) * matches
+            # Update the first PTE with merged result
+            pte_list[pte1_idx] = (new_pte, merged_nodes)
+            # Remove the second PTE
+            pte_list.pop(pte2_idx)
 
-            # Case 2: Nodes are in different PTEs - merge them
-            else:
-                pte1, nodes1 = ptes[pte1_idx]
-                pte2, nodes2 = ptes[pte2_idx]
+            # Update node_to_pte mappings
+            for node_idx in nodes2:
+                node_to_pte[node_idx] = pte1_idx
+            # Adjust indices for all nodes in PTEs after the removed one
+            for node_idx, pte_idx in node_to_pte.items():
+                if pte_idx > pte2_idx:
+                    node_to_pte[node_idx] = pte_idx - 1
 
-                new_pte = pte1.conjoin(pte2, legs1=join_legs1, legs2=join_legs2)
-                merged_nodes = nodes1.union(nodes2)
-                # Update the first PTE with merged result
-                ptes[pte1_idx] = (new_pte, merged_nodes)
-                # Remove the second PTE
-                ptes.pop(pte2_idx)
+            prev_submatrix1 = pte1.rank()
+            prev_submatrix2 = pte2.rank()
 
-                # Update node_to_pte mappings
-                for node in nodes2:
-                    node_to_pte[node] = pte1_idx
-                # Adjust indices for all nodes in PTEs after the removed one
-                for node, pte_idx in node_to_pte.items():
-                    if pte_idx > pte2_idx:
-                        node_to_pte[node] = pte_idx - 1
-
-                new_traceable_legs = [
-                    leg
-                    for leg in traceable_legs[node_idx1]
-                    if leg not in join_legs1 and leg not in join_legs2
-                ]
-
-                new_traceable_legs += [
-                    leg
-                    for leg in traceable_legs[node_idx2]
-                    if leg not in join_legs1 and leg not in join_legs2
-                ]
-                prev_submatrix1 = tn._get_rank_for_matrix_legs(pte1, traceable_legs[node_idx1])
-                prev_submatrix2 = tn._get_rank_for_matrix_legs(pte2, traceable_legs[node_idx2])
-
-                join_idxs2 = [i for i, leg in enumerate(pte2.legs) if leg in join_legs2]
-                join_idxs2 += [i + (pte2.h.shape[1]//2) for i, leg in enumerate(pte2.legs) if leg in join_legs2]
-                join_idxs = [i for i, leg in enumerate(pte1.legs) if leg in join_legs1]
-                join_idxs += [i + (pte1.h.shape[1]//2) for i, leg in enumerate(pte1.legs) if leg in join_legs1]
-                joined1 = pte1.h[:, join_idxs]
-                joined2 = pte2.h[:, join_idxs2]
-
-                tensor_prod = tensor_product(joined1, joined2)                
-                matches = tn._count_matching_stabilizers_by_enumeration(tensor_prod)
-                cost += (2**(prev_submatrix1 + prev_submatrix2)* matches)
-
-                for node in merged_nodes:
-                    traceable_legs[node] = new_traceable_legs
-    print("returning cost: ", cost)
-    print("iscore, jscore = ", iscore, jscore)
-    return iscore + jscore + cost
+            matches = count_matching_stabilizers_ratio_all_pairs(pte1, pte2, join_legs1, join_legs2) 
+            cost += (2 ** (prev_submatrix1 + prev_submatrix2)) * matches
+            # print("\t cost for trace:", traces, "is: ", cost)
+    return cost
 
 def compute_con_cost_flops(
     temp_legs,
@@ -463,7 +343,7 @@ def compute_con_cost_flops(
     """Compute the total flops cost of a contraction given by temporary legs,
     also removing any contracted indices from the temporary legs.
     """
-    #print("Compute flops cost of contraction with temporary legs:", temp_legs)
+    #print("Compute flops cost of contraction with legs:", temp_legs)
     #print("other inputs are: appearances:", appearances,
      #     "sizes:", sizes, "iscore:", iscore, "jscore:", jscore)
     
@@ -627,6 +507,7 @@ def parse_minimize_for_optimal(minimize):
     This function is cached for speed.
     """
     import re
+    print("parsing minimize for optimal: ", minimize)
     if minimize == "flops":
         return compute_con_cost_flops
     elif minimize == "max":
@@ -635,7 +516,7 @@ def parse_minimize_for_optimal(minimize):
         return compute_con_cost_size
     elif minimize == "write":
         return compute_con_cost_write
-    elif minimize == "custom":
+    elif minimize == "custom_flops":
         return compute_con_cost_custom
     elif callable(minimize):
         return minimize
@@ -669,8 +550,7 @@ class ContractionProcessor:
     __slots__ = (
         "nodes",
         "node_names",
-        "tn",
-        "open_legs_per_node",
+        "contraction_info",
         "edges",
         "indmap",
         "appearances",
@@ -687,8 +567,7 @@ class ContractionProcessor:
         inputs,
         output,
         size_dict,
-        #tn,
-        #open_legs_per_node,
+        contraction_info=None,
         track_flops=False,
         flops_limit=float("inf"),
     ):
@@ -697,11 +576,10 @@ class ContractionProcessor:
         self.indmap = {}
         self.appearances = []
         self.node_names = []
+        self.contraction_info = contraction_info
         self.sizes = []
-        #self.tn = tn
-        #self.open_legs_per_node = open_legs_per_node
         c = 0
-
+        #print("contraction info in contraction processor is: ", contraction_info)
         #print("inputs to contraction processor: ", inputs)
         for i, term in enumerate(inputs):
             legs = []
@@ -727,9 +605,9 @@ class ContractionProcessor:
         for ind in output:
             self.appearances[self.indmap[ind]] += 1
 
-        #print("node names is: ", self.node_names)
-        #print("indmap is: ", self.indmap)
-        #print("self.nodes is: ", self.nodes)
+        # print("node names is: ", self.node_names)
+        # print("indmap is: ", self.indmap)
+        # print("self.nodes is: ", self.nodes)
         
         self.ssa = len(self.nodes)
         self.ssa_path = []
@@ -820,7 +698,7 @@ class ContractionProcessor:
             self.flops += compute_flops(ilegs, jlegs, self.sizes)
 
         if new_legs is None:
-            new_legs = compute_contracted(ilegs, jlegs, self.appearances)
+            new_legs, new_traces = compute_contracted(ilegs, jlegs, self.appearances)
 
         k = self.add_node(new_legs)
         self.ssa_path.append((i, j))
@@ -925,10 +803,12 @@ class ContractionProcessor:
 
     def optimize_greedy(
         self,
+        minimize="combo",
         costmod=1.0,
         temperature=0.0,
         seed=None,
     ):
+        print("running optimize greedy with minimize: ", minimize, " and self.contraction info is: ", self.contraction_info)
         """ """
         if temperature == 0.0:
 
@@ -939,7 +819,7 @@ class ContractionProcessor:
             gmblgen = GumbelBatchedGenerator(seed)
 
             def local_score(sa, sb, sab):
-                score = sab / costmod - (sa + sb) * costmod
+                score = math.log(sab) / costmod - (math.log(sa + sb)) * costmod
                 if score > 0:
                     return math.log(score) - temperature * gmblgen()
                 elif score < 0:
@@ -947,10 +827,22 @@ class ContractionProcessor:
                 else:
                     return -temperature * gmblgen()
 
-        node_sizes = {}
-        for i, ilegs in self.nodes.items():
-            node_sizes[i] = compute_size(ilegs, self.sizes)
+        reverse_map = {v: k for k, v in self.indmap.items()}
 
+        node_sizes = {}
+        node_traces = {}
+        
+        idx = 0
+        for i, ilegs in self.nodes.items():
+            if minimize == "custom_flops" and self.contraction_info is not None: 
+                node_idx = self.contraction_info.input_names[idx]
+                node_sizes[i] = 2**(self.contraction_info.nodes[node_idx].rank())
+            else:
+                node_sizes[i] = compute_size(ilegs, self.sizes)
+
+            node_traces[i] = []
+            idx += 1
+    
         queue = []
         contractions = {}
         c = 0
@@ -958,18 +850,32 @@ class ContractionProcessor:
             for i, j in itertools.combinations(ix_nodes, 2):
                 isize = node_sizes[i]
                 jsize = node_sizes[j]
-                klegs = compute_contracted(
-                    self.nodes[i], self.nodes[j], self.appearances
+
+                itraces = node_traces[i]
+                jtraces = node_traces[j]
+                
+                klegs, new_traces = compute_contracted(
+                    self.nodes[i], self.nodes[j], self.appearances, reverse_map, self.contraction_info
                 )
-                ksize = compute_size(klegs, self.sizes)
+                combined_traces = list(itraces) + list(jtraces) + [new_traces]
+                # print("itraces: ", itraces)
+                # print("jtraces: ", jtraces)
+                # print("new_traces: ", new_traces)
+                if(minimize == "custom_flops" and self.contraction_info is not None):
+                    ksize = compute_size_custom(self.contraction_info, combined_traces)
+                    # print("found ksize = ", ksize)
+                else:
+                    ksize = compute_size(klegs, self.sizes)
                 score = local_score(isize, jsize, ksize)
                 heapq.heappush(queue, (score, c))
-                contractions[c] = (i, j, ksize, klegs)
+                contractions[c] = (i, j, ksize, klegs, combined_traces)
                 c += 1
 
         while queue:
+            #print("optimizing greedy while loop")
             _, c0 = heapq.heappop(queue)
-            i, j, ksize, klegs = contractions.pop(c0)
+            
+            i, j, ksize, klegs, ktraces = contractions.pop(c0)
             if (i not in self.nodes) or (j not in self.nodes):
                 # one of nodes already contracted
                 continue
@@ -981,16 +887,25 @@ class ContractionProcessor:
                 return False
 
             node_sizes[k] = ksize
+            node_traces[k] = ktraces
 
             for l in self.neighbors(k):
                 lsize = node_sizes[l]
-                mlegs = compute_contracted(
-                    klegs, self.nodes[l], self.appearances
+                mlegs, new_traces = compute_contracted(
+                    klegs, self.nodes[l], self.appearances, reverse_map, self.contraction_info
                 )
-                msize = compute_size(mlegs, self.sizes)
+                combined_traces = list(node_traces[k]) + list(node_traces[l]) + [new_traces]
+                # print("node_traces[k]: ", node_traces[k])
+                # print("node_traces[l]: ", node_traces[l])
+                # print("new_traces: ", new_traces)
+                if(minimize == "custom_flops" and self.contraction_info is not None):
+                    msize = compute_size_custom(self.contraction_info, combined_traces)
+                    #print("found msize = ", msize)
+                else:
+                    msize = compute_size(mlegs, self.sizes)
                 score = local_score(ksize, lsize, msize)
                 heapq.heappush(queue, (score, c))
-                contractions[c] = (k, l, msize, mlegs)
+                contractions[c] = (k, l, msize, mlegs, combined_traces)
                 c += 1
 
         return True
@@ -998,17 +913,15 @@ class ContractionProcessor:
     def optimize_optimal_connected(
         self,
         where,
-        minimize="flops",
+        minimize="combo",
         cost_cap=2,
         search_outer=False,
     ):
         compute_con_cost = parse_minimize_for_optimal(minimize)
+        print("self.contraction_info in optimal is: ", self.contraction_info)
+        print("minimize in optimal is: ", minimize)
 
         nterms = len(where)
-        #print("nterms is: ", nterms)
-        #print("where is: ", where)
-        #print("tensor network nodes are: ", self.tn.nodes)
-        #print("tensor network traces are: ", self.tn._traces)
         contractions = [{} for _ in range(nterms + 1)]
         # we use linear index within terms given during optimization, this maps
         # back to the original node index
@@ -1018,16 +931,22 @@ class ContractionProcessor:
             ilegs = self.nodes[node]
             # if(len(ilegs) > 1):
             #     ilegs = [ilegs[0]]
-            
-            #print("ilegs are: ", ilegs)
+
+            # print("ilegs are: ", ilegs)
             isubgraph = 1 << i
             termmap[isubgraph] = node
             iscore = 0
             ipath = ()
-            contractions[1][isubgraph] = (ilegs, iscore, ipath)
+            traces_path = []
+            contractions[1][isubgraph] = (ilegs, iscore, ipath, traces_path)
 
-        while not contractions[nterms]:
+        reverse_map = {v: k for k, v in self.indmap.items()}
+    
+        count = 0
+        while not contractions[nterms]: # continue until entire graph has been built
+            # print("contractions: ", contractions)
             for m in range(2, nterms + 1):
+                # print("making subgraphs of size: ", m)
                 # try and make subgraphs of size m
                 contractions_m = contractions[m]
                 for k in range(1, m // 2 + 1):
@@ -1040,13 +959,11 @@ class ContractionProcessor:
                         )
                     else:
                         # only want unique combinations
-                        pairs = itertools.combinations(
-                            contractions[k].items(), 2
-                        )
+                        pairs = itertools.combinations(contractions[k].items(), 2)
 
-                    for (subgraph_i, (ilegs, iscore, ipath)), (
+                    for (subgraph_i, (ilegs, iscore, ipath, itraces)), (
                         subgraph_j,
-                        (jlegs, jscore, jpath),
+                        (jlegs, jscore, jpath, jtraces),
                     ) in pairs:
                         if subgraph_i & subgraph_j:
                             # subgraphs overlap -> invalid
@@ -1058,7 +975,9 @@ class ContractionProcessor:
                         ni = len(ilegs)
                         nj = len(jlegs)
                         new_legs = []
+                        traces = []
                         # if search_outer -> we will never skip
+                        
                         skip_because_outer = not search_outer
                         while (ip < ni) and (jp < nj):
                             iix, ic = ilegs[ip]
@@ -1071,8 +990,12 @@ class ContractionProcessor:
                                 jp += 1
                             else:  # iix == jix:
                                 # shared index
+                                #print("shared index found")
                                 new_legs.append((iix, ic + jc))
-                                ip += 1
+
+                                if(minimize == "custom_flops" and self.contraction_info is not None):
+                                    (node_idx1, leg1), (node_idx2, leg2) = self.contraction_info.index_to_legs[reverse_map[iix]]
+                                    traces.append((node_idx1, node_idx2, leg1, leg2))
                                 jp += 1
                                 skip_because_outer = False
 
@@ -1083,19 +1006,23 @@ class ContractionProcessor:
                         # add any remaining non-shared indices
                         new_legs.extend(ilegs[ip:])
                         new_legs.extend(jlegs[jp:])
+                        
+                        combined_traces = list(itraces) + list(jtraces) + [traces]
 
-                        #print("Computing new score for legs:", new_legs)
-                        if(minimize == "custom"):
-                            new_score = compute_con_cost(
-                                new_legs,
-                                self.appearances,
-                                self.sizes,
-                                iscore,
-                                jscore,
-                                self.node_names,
-                                self.tn,
-                                self.open_legs_per_node
-                            )
+                        if(minimize == "custom_flops" and self.contraction_info is not None):
+                            if( len(where) < 10):
+                                new_score = compute_con_cost_custom(
+                                    self.contraction_info,
+                                    combined_traces
+                                )
+                            else:
+                                new_score = compute_con_cost_flops(
+                                    new_legs,
+                                    self.appearances,
+                                    self.sizes,
+                                    iscore,
+                                    jscore,
+                                )
                         else:
                             new_score = compute_con_cost(
                                 new_legs,
@@ -1121,20 +1048,24 @@ class ContractionProcessor:
                                 new_legs,
                                 new_score,
                                 new_path,
+                                combined_traces,
                             )
 
             # make the holes of our 'sieve' wider
             cost_cap *= 2
+            count += 1
 
-        ((final_legs, final_score, bitpath),) = contractions[nterms].values()
-        #print("contractions are: ", contractions)
-        #print("Final path chosen is: ", final_legs)
-        #print("Final score from optimize optimal is: ", final_score)
+        ((final_legs, final_score, bitpath, final_traces),) = contractions[nterms].values()
+        # print("contractions are: ", contractions)
+        # print("Final path chosen is: ", final_legs)
+        print("Final score from optimize optimal is: ", final_score)
+        print("final traces: ", final_traces)
         for subgraph_i, subgraph_j in bitpath:
             i = termmap[subgraph_i]
             j = termmap[subgraph_j]
             k = self.contract_nodes(i, j)
             termmap[subgraph_i | subgraph_j] = k
+
 
     def optimize_optimal(
         self, minimize="flops", cost_cap=2, search_outer=False
@@ -1356,6 +1287,7 @@ def optimize_greedy(
     inputs,
     output,
     size_dict,
+    search_params={},
     costmod=1.0,
     temperature=0.0,
     simplify=True,
@@ -1408,10 +1340,11 @@ def optimize_greedy(
     path : list[list[int]]
         The contraction path, given as a sequence of pairs of node indices.
     """
-    cp = ContractionProcessor(inputs, output, size_dict)
+    print("search params in optimize greedy is: ", search_params)
+    cp = ContractionProcessor(inputs, output, size_dict, search_params.get("contraction_info", None))
     if simplify:
         cp.simplify()
-    cp.optimize_greedy(costmod=costmod, temperature=temperature)
+    cp.optimize_greedy(minimize=search_params.get("greedy_minimizer", "combo"), costmod=costmod, temperature=temperature)
     # handle disconnected subgraphs
     cp.optimize_remaining_by_size()
     if use_ssa:
@@ -1556,8 +1489,7 @@ def optimize_optimal(
     inputs,
     output,
     size_dict,
-    #tn,
-    #open_legs_per_node,
+    search_params={},
     minimize="flops",
     cost_cap=2,
     search_outer=False,
@@ -1627,12 +1559,13 @@ def optimize_optimal(
     -------
     path : list[list[int]]
         The contraction path, given as a sequence of pairs of node indices.
-    """    
-    cp = ContractionProcessor(inputs, output, size_dict)
+    """  
+    print("optimizing optimal with minimize: ", minimize , "and searchparams: ", search_params)  
+    cp = ContractionProcessor(inputs, output, size_dict, search_params.get("contraction_info", None))
     if simplify:
         cp.simplify()
     cp.optimize_optimal(
-        minimize=minimize, cost_cap=cost_cap, search_outer=search_outer
+        minimize=search_params.get("optimal_minimizer", "flops"), cost_cap=cost_cap, search_outer=search_outer
     )
     # handle disconnected subgraphs
     cp.optimize_remaining_by_size()
@@ -1723,28 +1656,30 @@ class GreedyOptimizer(PathOptimizer):
         opts.update(kwargs)
         return opts
 
-    def ssa_path(self, inputs, output, size_dict, **kwargs):
+    def ssa_path(self, inputs, output, size_dict, contraction_info, **kwargs):
         return self._optimize_fn(
             inputs,
             output,
             size_dict,
+            contraction_info,
             use_ssa=True,
             **self.maybe_update_defaults(**kwargs),
         )
 
-    def search(self, inputs, output, size_dict, **kwargs):
+    def search(self, inputs, output, size_dict, contraction_info=None, **kwargs):
         from ..core import ContractionTree
 
-        ssa_path = self.ssa_path(inputs, output, size_dict, **kwargs)
+        ssa_path = self.ssa_path(inputs, output, size_dict, contraction_info, **kwargs)
         return ContractionTree.from_path(
             inputs, output, size_dict, ssa_path=ssa_path
         )
 
-    def __call__(self, inputs, output, size_dict, **kwargs):
+    def __call__(self, inputs, output, size_dict, contraction_info=None, **kwargs):
         return self._optimize_fn(
             inputs,
             output,
             size_dict,
+            contraction_info,
             use_ssa=False,
             **self.maybe_update_defaults(**kwargs),
         )
@@ -1997,12 +1932,14 @@ class OptimalOptimizer(PathOptimizer):
 
     def __init__(
         self,
+        contraction_info=None,
         minimize="flops",
         cost_cap=2,
         search_outer=False,
         simplify=True,
         accel="auto",
     ):
+        self.contraction_info = contraction_info
         self.minimize = minimize
         self.cost_cap = cost_cap
         self.search_outer = search_outer
@@ -2020,30 +1957,34 @@ class OptimalOptimizer(PathOptimizer):
         opts.update(kwargs)
         return opts
 
-    def ssa_path(self, inputs, output, size_dict, tn, open_legs_per_node, **kwargs):
+    def ssa_path(self, inputs, output, size_dict, search_params, **kwargs):
+        if search_params.get("contraction_info") is None:
+            search_params["contraction_info"] = self.contraction_info
         return self._optimize_fn(
             inputs,
             output,
             size_dict,
-            tn,
-            open_legs_per_node,
+            search_params,
             use_ssa=True,
             **self.maybe_update_defaults(**kwargs),
         )
 
-    def search(self, inputs, output, size_dict, tn, open_legs_per_node, **kwargs):
+    def search(self, inputs, output, size_dict, search_params={}, **kwargs):
         from ..core import ContractionTree
 
-        ssa_path = self.ssa_path(inputs, output, size_dict, tn, open_legs_per_node, **kwargs)
+        ssa_path = self.ssa_path(inputs, output, size_dict, search_params, **kwargs)
         return ContractionTree.from_path(
             inputs, output, size_dict, ssa_path=ssa_path
         )
 
-    def __call__(self, inputs, output, size_dict, **kwargs):
+    def __call__(self, inputs, output, size_dict, search_params={}, **kwargs):
+        if search_params.get("contraction_info") is None:
+            search_params["contraction_info"] = self.contraction_info
         return self._optimize_fn(
             inputs,
             output,
             size_dict,
+            search_params,
             use_ssa=False,
             **self.maybe_update_defaults(**kwargs),
         )

@@ -176,20 +176,20 @@ def _find_path_explicit_path(inputs, output, size_dict, optimize):
     return optimize
 
 
-def _find_path_optimizer(inputs, output, size_dict, optimize, **kwargs):
-    return optimize(inputs, output, size_dict, **kwargs)
+def _find_path_optimizer(inputs, output, size_dict, search_params, optimize, **kwargs):
+    return optimize(inputs, output, size_dict, search_params, **kwargs)
 
 
-def _find_path_preset(inputs, output, size_dict, optimize, **kwargs):
+def _find_path_preset(inputs, output, size_dict, search_params, optimize, **kwargs):
     optimize = preset_to_optimizer(optimize)
-    return _find_path_optimizer(inputs, output, size_dict, optimize, **kwargs)
+    return _find_path_optimizer(inputs, output, size_dict, search_params, optimize, **kwargs)
 
 
-def _find_path_tree(inputs, output, size_dict, optimize, **kwargs):
+def _find_path_tree(inputs, output, size_dict, search_params, optimize, **kwargs):
     return optimize.get_path()
 
 
-def find_path(inputs, output, size_dict, optimize="auto", **kwargs):
+def find_path(inputs, output, size_dict, search_params, optimize="auto", **kwargs):
     """Directly find a contraction path for a given set of inputs and output.
 
     Parameters
@@ -226,7 +226,7 @@ def find_path(inputs, output, size_dict, optimize="auto", **kwargs):
         else:
             fn = _find_path_handlers[cls] = _find_path_optimizer
 
-    return fn(inputs, output, size_dict, optimize, **kwargs)
+    return fn(inputs, output, size_dict, search_params, optimize, **kwargs)
 
 
 _PATH_CACHE = {}
