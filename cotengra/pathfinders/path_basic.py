@@ -172,7 +172,7 @@ def group_traces_with_order(traces):
 def compute_size_custom(
     tn, combined_traces
 ):
-    print("RUNNING CUSTOM GREEDY!!!")
+    # print("RUNNING CUSTOM GREEDY!!!")
     # print("combined traces are: ", combined_traces)
 
     pte_list = list(tn.pte_list)
@@ -196,10 +196,6 @@ def compute_size_custom(
             for node_idx1, node_idx2, _, _ in group_traces:
                 pte_ids.add(node_to_pte[node_idx1])
                 pte_ids.add(node_to_pte[node_idx2])
-
-            if len(pte_ids) != 2:
-                print("Warning: expected a pair of PTEs but got:", pte_ids)
-                continue
 
             pte1_idx, pte2_idx = tuple(pte_ids)
             join_legs1 = []
@@ -253,7 +249,7 @@ def compute_con_cost_custom(
     tn, combined_traces
 ):
     from planqtn.symplectic import count_matching_stabilizers_ratio_all_pairs
-    print("RUNNING CUSTOM OPTIMAL!!!")
+    # print("RUNNING CUSTOM OPTIMAL!!!")
     cost = 0
     pte_list = list(tn.pte_list)
     node_to_pte = dict(tn.node_to_pte)
@@ -276,10 +272,6 @@ def compute_con_cost_custom(
             for node_idx1, node_idx2, _, _ in group_traces:
                 pte_ids.add(node_to_pte[node_idx1])
                 pte_ids.add(node_to_pte[node_idx2])
-
-            if len(pte_ids) != 2:
-                print("Warning: expected a pair of PTEs but got:", pte_ids)
-                continue
 
             pte1_idx, pte2_idx = tuple(pte_ids)
             join_legs1 = []
@@ -507,7 +499,6 @@ def parse_minimize_for_optimal(minimize):
     This function is cached for speed.
     """
     import re
-    print("parsing minimize for optimal: ", minimize)
     if minimize == "flops":
         return compute_con_cost_flops
     elif minimize == "max":
@@ -1340,7 +1331,6 @@ def optimize_greedy(
     path : list[list[int]]
         The contraction path, given as a sequence of pairs of node indices.
     """
-    print("search params in optimize greedy is: ", search_params)
     cp = ContractionProcessor(inputs, output, size_dict, search_params.get("contraction_info", None))
     if simplify:
         cp.simplify()

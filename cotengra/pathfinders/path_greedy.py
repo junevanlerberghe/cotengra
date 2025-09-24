@@ -18,8 +18,6 @@ def trial_greedy(
     temperature=0.0,
     costmod=1.0,
 ):
-    
-    print("running greedy trial! with search params = ", search_params)
     if random_strength != 0.0:
         # don't supply randomized sizes to actual contraction tree
         greedy_size_dict = jitter_dict(size_dict, random_strength)

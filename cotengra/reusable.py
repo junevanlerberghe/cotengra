@@ -112,7 +112,6 @@ class ReusableOptimizer(PathOptimizer):
         directory_split="auto",
         **opt_kwargs,
     ):
-        print("REUSABLE OPTIMIZER with options: ", opt_kwargs)
         self._suboptimizers = {}
         self._suboptimizer_kwargs = opt_kwargs
 

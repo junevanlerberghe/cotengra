@@ -575,7 +575,6 @@ class HyperOptimizer(PathOptimizer):
         trial_fn = ComputeScore(
             trial_fn,
             score_fn=self.objective,
-            
             score_compression=self.score_compression,
             on_trial_error=self.on_trial_error,
         )
@@ -697,6 +696,7 @@ class HyperOptimizer(PathOptimizer):
             else:
 
                 def should_stop():
+                    print("curr time elapsed is: ", time.time() - t0)
                     return (time.time() - t0) > self.max_time
 
         else:
@@ -727,11 +727,10 @@ class HyperOptimizer(PathOptimizer):
 
         # assess the trials
         count = 0
-        # print("about to loop through trials, # = ", len(trials))
         for trial in trials:
             # check if we have found a new best
             print("---------------------------------")
-            print("DONE RUNNING TRIAL: ", trial)
+            print("DONE RUNNING TRIAL: ", count)
             count += 1
             if trial["score"] < self.best["score"]:
                 self.trials_since_best = 0

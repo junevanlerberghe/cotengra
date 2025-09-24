@@ -67,14 +67,11 @@ class AutoOptimizer(PathOptimizer):
         self.kwargs.setdefault("reconf_opts", {})
         self.kwargs["reconf_opts"].setdefault("subtree_size", 4)
         self.kwargs["reconf_opts"].setdefault("maxiter", 100)
-
         self.kwargs["on_trial_error"] = "raise"
         self._hyperoptimizers_by_thread = {}
         if cache:
-
             self._optimizer_hyper_cls = ReusableHyperOptimizer
         else:
-
             self._optimizer_hyper_cls = HyperOptimizer
 
     def _get_optimizer_hyper_threadsafe(self):
@@ -84,7 +81,6 @@ class AutoOptimizer(PathOptimizer):
         try:
             return self._hyperoptimizers_by_thread[tid]
         except KeyError:
-   
             opt = self._optimizer_hyper_cls(
                 minimize=self.minimize, **self.kwargs
             )
@@ -139,6 +135,8 @@ class AutoOptimizer(PathOptimizer):
             )
         else:
             # use hyperoptimizer
+            print("running hyper with search params:", search_params)
+            print("self.minimize is:", self.minimize)
             return self._get_optimizer_hyper_threadsafe()(
                 inputs, output, size_dict, search_params, **kwargs
             )
