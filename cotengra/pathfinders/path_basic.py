@@ -177,52 +177,129 @@ def compute_size_custom(
 
     pte_list = list(tn.pte_list)
     node_to_pte = dict(tn.node_to_pte)
-    
+    groups = {}
+    count = 0
+
     for traces in combined_traces:
-        # ensure traces is a sequence of 4-tuples
-        traces = list(traces)
-
-        # group traces by the PTE-pair they connect (frozenset of two pte indices)
-        groups = defaultdict(list)
+        all_grouped_traces = []
+        idx = 0
+        to_skip = set()
         for node_idx1, node_idx2, leg1, leg2 in traces:
-            p1 = node_to_pte[node_idx1]
-            p2 = node_to_pte[node_idx2]
-            key = frozenset({p1, p2})
-            groups[key].append((node_idx1, node_idx2, leg1, leg2))
+            if (node_idx1, node_idx2, leg1, leg2) in to_skip:
+                idx += 1
+                continue
+            if node_idx1 not in groups and node_idx2 not in groups: # both nodes have not been merged with anything
+                groups[node_idx1] = count
+                groups[node_idx2] = count
+                count += 1
+                all_grouped_traces.append([(node_idx1, node_idx2, leg1, leg2)])
+            elif node_idx1 in groups and node_idx2 not in groups: # merging existing group with new node
+                grp = groups[node_idx1]
+                traces_to_append = []
+                traces_to_append.append((node_idx1, node_idx2, leg1, leg2))
 
-        # now process each group separately; each should connect exactly two PTE indices
-        for key, group_traces in groups.items():
-            pte_ids = set()
-            for node_idx1, node_idx2, _, _ in group_traces:
-                pte_ids.add(node_to_pte[node_idx1])
-                pte_ids.add(node_to_pte[node_idx2])
+                # now, loop through the rest of traces after current
+                # if there is a trace with the same node and grp2, add it
+                for j in range(idx + 1, len(traces)):
+                    next_node1, next_node2, next_leg1, next_leg2 = traces[j]
+                    next_grp1 = groups.get(next_node1)
+                    next_grp2 = groups.get(next_node2)
+                    if(node_idx2 in (next_node1, next_node2) and grp in (next_grp1, next_grp2)):
+                        traces_to_append.append((next_node1, next_node2, next_leg1, next_leg2))
+                        to_skip.add((next_node1, next_node2, next_leg1, next_leg2))
 
-            pte1_idx, pte2_idx = tuple(pte_ids)
+                groups[node_idx2] = grp
+
+                all_grouped_traces.append(traces_to_append)
+            elif node_idx1 not in groups and node_idx2 in groups: # merging existing group with new node
+                grp = groups[node_idx2]
+
+                traces_to_append = []
+                traces_to_append.append((node_idx1, node_idx2, leg1, leg2))
+
+                # now, loop through the rest of traces after current
+                # if there is a trace with the same node and grp2, add it
+                for j in range(idx + 1, len(traces)):
+                    next_node1, next_node2, next_leg1, next_leg2 = traces[j]
+                    next_grp1 = groups.get(next_node1)
+                    next_grp2 = groups.get(next_node2)
+                    if(node_idx1 in (next_node1, next_node2) and grp in (next_grp1, next_grp2)):
+                        traces_to_append.append((next_node1, next_node2, next_leg1, next_leg2))
+                        to_skip.add((next_node1, next_node2, next_leg1, next_leg2))
+
+                groups[node_idx1] = grp
+                all_grouped_traces.append(traces_to_append)
+
+            elif groups[node_idx1] != groups[node_idx2]: # merging two existing groups
+                # want to merge group of node_idx2 into group of node_idx1
+                grp1 = groups[node_idx1]
+                grp2 = groups[node_idx2]
+
+                traces_to_append = []
+                traces_to_append.append((node_idx1, node_idx2, leg1, leg2))
+
+                # now, loop through the rest of traces after current
+                # if there is a trace with the same grp1 and grp2, add it
+                for j in range(idx + 1, len(traces)):
+                    next_node1, next_node2, next_leg1, next_leg2 = traces[j]
+                    next_grp1 = groups.get(next_node1)
+                    next_grp2 = groups.get(next_node2)
+
+                    if(grp1 in (next_grp1, next_grp2) and grp2 in (next_grp1, next_grp2)):
+                        traces_to_append.append((next_node1, next_node2, next_leg1, next_leg2))
+                        to_skip.add((next_node1, next_node2, next_leg1, next_leg2))
+
+                for k, v in groups.items():
+                    if v == grp2:
+                        groups[k] = grp1
+
+                all_grouped_traces.append(traces_to_append)
+
+            else: # both nodes already in same group 
+                print("SHOULD NOT HAPPEN!! current trace is: ", (node_idx1, node_idx2, leg1, leg2))
+                print("\t current groups: ", groups)
+                print("\t all grouped traces: ", all_grouped_traces)
+                assert 12 == 11
+            idx += 1
+
+        # print("all lists of traces is now: ", all_grouped_traces)
+        for traces in all_grouped_traces:
+            pte_ids = {
+                node_to_pte[node_idx1] for node_idx1, _, _, _ in traces
+            }.union({node_to_pte[node_idx2] for _, node_idx2, _, _ in traces})
+
+            assert len(pte_ids) == 2, f"Expected 2 PTEs, got {len(pte_ids)}"
+            pte1_idx, pte2_idx = pte_ids
             join_legs1 = []
             join_legs2 = []
 
             node_join_legs = defaultdict(list)
-            
-            for node_idx1, node_idx2, leg1, leg2 in group_traces:
-                node_join_legs[node_idx1].append(leg1)
-                node_join_legs[node_idx2].append(leg2)
+
+            for node_idx1, node_idx2, legs1, legs2 in traces:
+                leg1 = legs1[0]
+                leg2 = legs2[0]
+
+                node_join_legs[node_idx1].append(legs1)
+                node_join_legs[node_idx2].append(legs2)
 
                 if node_idx1 in pte_list[pte1_idx][1]:
-                    join_legs1.append(leg1)
+                    join_legs1.append(legs1)
                 else:
-                    join_legs2.append(leg1)
+                    join_legs2.append(legs1)
 
                 if node_idx2 in pte_list[pte2_idx][1]:
-                    join_legs2.append(leg2)
+                    join_legs2.append(legs2)
                 else:
-                    join_legs1.append(leg2)
+                    join_legs1.append(legs2)
 
             pte1, nodes1 = pte_list[pte1_idx]
             pte2, nodes2 = pte_list[pte2_idx]
             merged_nodes = nodes1.union(nodes2)
 
             new_pte = pte1.merge_with(
-                pte2, join_legs1, join_legs2
+                pte2,
+                tuple(join_legs1),
+                tuple(join_legs2)
             )
 
             for node_idx in new_pte.node_ids:
@@ -253,52 +330,130 @@ def compute_con_cost_custom(
     cost = 0
     pte_list = list(tn.pte_list)
     node_to_pte = dict(tn.node_to_pte)
+    groups = {}
+    count = 0
+    print("combined traces are: ", combined_traces)
 
     for traces in combined_traces:
-        # ensure traces is a sequence of 4-tuples
-        traces = list(traces)
-
-        # group traces by the PTE-pair they connect (frozenset of two pte indices)
-        groups = defaultdict(list)
+        all_grouped_traces = []
+        idx = 0
+        to_skip = set()
         for node_idx1, node_idx2, leg1, leg2 in traces:
-            p1 = node_to_pte[node_idx1]
-            p2 = node_to_pte[node_idx2]
-            key = frozenset({p1, p2})
-            groups[key].append((node_idx1, node_idx2, leg1, leg2))
+            if (node_idx1, node_idx2, leg1, leg2) in to_skip:
+                idx += 1
+                continue
+            if node_idx1 not in groups and node_idx2 not in groups: # both nodes have not been merged with anything
+                groups[node_idx1] = count
+                groups[node_idx2] = count
+                count += 1
+                all_grouped_traces.append([(node_idx1, node_idx2, leg1, leg2)])
+            elif node_idx1 in groups and node_idx2 not in groups: # merging existing group with new node
+                grp = groups[node_idx1]
+                traces_to_append = []
+                traces_to_append.append((node_idx1, node_idx2, leg1, leg2))
 
-        # now process each group separately; each should connect exactly two PTE indices
-        for key, group_traces in groups.items():
-            pte_ids = set()
-            for node_idx1, node_idx2, _, _ in group_traces:
-                pte_ids.add(node_to_pte[node_idx1])
-                pte_ids.add(node_to_pte[node_idx2])
+                # now, loop through the rest of traces after current
+                # if there is a trace with the same node and grp2, add it
+                for j in range(idx + 1, len(traces)):
+                    next_node1, next_node2, next_leg1, next_leg2 = traces[j]
+                    next_grp1 = groups.get(next_node1)
+                    next_grp2 = groups.get(next_node2)
+                    if(node_idx2 in (next_node1, next_node2) and grp in (next_grp1, next_grp2)):
+                        traces_to_append.append((next_node1, next_node2, next_leg1, next_leg2))
+                        to_skip.add((next_node1, next_node2, next_leg1, next_leg2))
 
-            pte1_idx, pte2_idx = tuple(pte_ids)
+                groups[node_idx2] = grp
+
+                all_grouped_traces.append(traces_to_append)
+            elif node_idx1 not in groups and node_idx2 in groups: # merging existing group with new node
+                grp = groups[node_idx2]
+
+                traces_to_append = []
+                traces_to_append.append((node_idx1, node_idx2, leg1, leg2))
+
+                # now, loop through the rest of traces after current
+                # if there is a trace with the same node and grp2, add it
+                for j in range(idx + 1, len(traces)):
+                    next_node1, next_node2, next_leg1, next_leg2 = traces[j]
+                    next_grp1 = groups.get(next_node1)
+                    next_grp2 = groups.get(next_node2)
+                    if(node_idx1 in (next_node1, next_node2) and grp in (next_grp1, next_grp2)):
+                        traces_to_append.append((next_node1, next_node2, next_leg1, next_leg2))
+                        to_skip.add((next_node1, next_node2, next_leg1, next_leg2))
+
+                groups[node_idx1] = grp
+                all_grouped_traces.append(traces_to_append)
+
+            elif groups[node_idx1] != groups[node_idx2]: # merging two existing groups
+                # want to merge group of node_idx2 into group of node_idx1
+                grp1 = groups[node_idx1]
+                grp2 = groups[node_idx2]
+
+                traces_to_append = []
+                traces_to_append.append((node_idx1, node_idx2, leg1, leg2))
+
+                # now, loop through the rest of traces after current
+                # if there is a trace with the same grp1 and grp2, add it
+                for j in range(idx + 1, len(traces)):
+                    next_node1, next_node2, next_leg1, next_leg2 = traces[j]
+                    next_grp1 = groups.get(next_node1)
+                    next_grp2 = groups.get(next_node2)
+
+                    if(grp1 in (next_grp1, next_grp2) and grp2 in (next_grp1, next_grp2)):
+                        traces_to_append.append((next_node1, next_node2, next_leg1, next_leg2))
+                        to_skip.add((next_node1, next_node2, next_leg1, next_leg2))
+
+                for k, v in groups.items():
+                    if v == grp2:
+                        groups[k] = grp1
+
+                all_grouped_traces.append(traces_to_append)
+
+            else: # both nodes already in same group 
+                print("SHOULD NOT HAPPEN!! current trace is: ", (node_idx1, node_idx2, leg1, leg2))
+                print("\t current groups: ", groups)
+                print("\t all grouped traces: ", all_grouped_traces)
+                assert 12 == 11
+            idx += 1
+
+        # print("all lists of traces is now: ", all_grouped_traces)
+        for traces in all_grouped_traces:
+            pte_ids = {
+                node_to_pte[node_idx1] for node_idx1, _, _, _ in traces
+            }.union({node_to_pte[node_idx2] for _, node_idx2, _, _ in traces})
+
+            assert len(pte_ids) == 2, f"Expected 2 PTEs, got {len(pte_ids)}"
+            pte1_idx, pte2_idx = pte_ids
             join_legs1 = []
             join_legs2 = []
 
             node_join_legs = defaultdict(list)
-            
-            for node_idx1, node_idx2, leg1, leg2 in group_traces:
-                node_join_legs[node_idx1].append(leg1)
-                node_join_legs[node_idx2].append(leg2)
+
+            for node_idx1, node_idx2, legs1, legs2 in traces:
+                leg1 = legs1[0]
+                leg2 = legs2[0]
+
+                node_join_legs[node_idx1].append(legs1)
+                node_join_legs[node_idx2].append(legs2)
 
                 if node_idx1 in pte_list[pte1_idx][1]:
-                    join_legs1.append(leg1)
+                    join_legs1.append(legs1)
                 else:
-                    join_legs2.append(leg1)
+                    join_legs2.append(legs1)
 
                 if node_idx2 in pte_list[pte2_idx][1]:
-                    join_legs2.append(leg2)
+                    join_legs2.append(legs2)
                 else:
-                    join_legs1.append(leg2)
+                    join_legs1.append(legs2)
 
             pte1, nodes1 = pte_list[pte1_idx]
             pte2, nodes2 = pte_list[pte2_idx]
             merged_nodes = nodes1.union(nodes2)
 
             new_pte = pte1.merge_with(
-                pte2, join_legs1, join_legs2
+                pte2,
+                tuple(join_legs1),
+                tuple(join_legs2)
             )
 
             for node_idx in new_pte.node_ids:
@@ -322,7 +477,7 @@ def compute_con_cost_custom(
 
             matches = count_matching_stabilizers_ratio_all_pairs(pte1, pte2, join_legs1, join_legs2) 
             cost += (2 ** (prev_submatrix1 + prev_submatrix2)) * matches
-            # print("\t cost for trace:", traces, "is: ", cost)
+
     return cost
 
 def compute_con_cost_flops(
