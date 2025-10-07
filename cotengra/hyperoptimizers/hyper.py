@@ -459,17 +459,12 @@ class HyperOptimizer(PathOptimizer):
         else:
             self._methods = list(methods)
 
-       
-
         if optlib is None:
             optlib = get_default_optlib()
 
         # which score to feed to the hyper optimizer (setter below handles)
         self.minimize = minimize
 
-        print("Minimize is:", self.minimize)
-
-        print("optlib is: ", optlib)
         self.score_compression = score_compression
         self.on_trial_error = on_trial_error
         self.best_score = float("inf")
@@ -696,7 +691,6 @@ class HyperOptimizer(PathOptimizer):
             else:
 
                 def should_stop():
-                    print("curr time elapsed is: ", time.time() - t0)
                     return (time.time() - t0) > self.max_time
 
         else:
@@ -729,8 +723,6 @@ class HyperOptimizer(PathOptimizer):
         count = 0
         for trial in trials:
             # check if we have found a new best
-            print("---------------------------------")
-            print("DONE RUNNING TRIAL: ", count)
             count += 1
             if trial["score"] < self.best["score"]:
                 self.trials_since_best = 0
@@ -762,7 +754,6 @@ class HyperOptimizer(PathOptimizer):
         """Run this optimizer and return the ``ContractionTree`` for the best
         path it finds.
         """
-        print("search with params: ", search_params)
         self._search(
             inputs,
             output,

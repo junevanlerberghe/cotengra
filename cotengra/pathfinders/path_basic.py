@@ -326,15 +326,14 @@ def compute_con_cost_custom(
     tn, combined_traces
 ):
     from planqtn.symplectic import count_matching_stabilizers_ratio_all_pairs
-    # print("RUNNING CUSTOM OPTIMAL!!!")
     cost = 0
     pte_list = list(tn.pte_list)
     node_to_pte = dict(tn.node_to_pte)
     groups = {}
     count = 0
-    print("combined traces are: ", combined_traces)
 
     for traces in combined_traces:
+        # First, need to group the traces by if there are multiple legs that can be conjoined at once
         all_grouped_traces = []
         idx = 0
         to_skip = set()
@@ -409,14 +408,9 @@ def compute_con_cost_custom(
 
                 all_grouped_traces.append(traces_to_append)
 
-            else: # both nodes already in same group 
-                print("SHOULD NOT HAPPEN!! current trace is: ", (node_idx1, node_idx2, leg1, leg2))
-                print("\t current groups: ", groups)
-                print("\t all grouped traces: ", all_grouped_traces)
-                assert 12 == 11
             idx += 1
 
-        # print("all lists of traces is now: ", all_grouped_traces)
+        # Traces are grouped, can proceed with normal conjoining to compute cost
         for traces in all_grouped_traces:
             pte_ids = {
                 node_to_pte[node_idx1] for node_idx1, _, _, _ in traces
@@ -490,10 +484,6 @@ def compute_con_cost_flops(
     """Compute the total flops cost of a contraction given by temporary legs,
     also removing any contracted indices from the temporary legs.
     """
-    #print("Compute flops cost of contraction with legs:", temp_legs)
-    #print("other inputs are: appearances:", appearances,
-     #     "sizes:", sizes, "iscore:", iscore, "jscore:", jscore)
-    
     cost = 1
     for i in range(len(temp_legs) - 1, -1, -1):
         ix, ix_count = temp_legs[i]
@@ -503,7 +493,6 @@ def compute_con_cost_flops(
             # contracted index, remove
             del temp_legs[i]
 
-    #print("returning iscore + jscore + cost, cost = ", cost)
     return iscore + jscore + cost
 
 
@@ -750,10 +739,6 @@ class ContractionProcessor:
 
         for ind in output:
             self.appearances[self.indmap[ind]] += 1
-
-        # print("node names is: ", self.node_names)
-        # print("indmap is: ", self.indmap)
-        # print("self.nodes is: ", self.nodes)
         
         self.ssa = len(self.nodes)
         self.ssa_path = []
@@ -954,7 +939,6 @@ class ContractionProcessor:
         temperature=0.0,
         seed=None,
     ):
-        print("running optimize greedy with minimize: ", minimize, " and self.contraction info is: ", self.contraction_info)
         """ """
         if temperature == 0.0:
 
@@ -1004,12 +988,9 @@ class ContractionProcessor:
                     self.nodes[i], self.nodes[j], self.appearances, reverse_map, self.contraction_info
                 )
                 combined_traces = list(itraces) + list(jtraces) + [new_traces]
-                # print("itraces: ", itraces)
-                # print("jtraces: ", jtraces)
-                # print("new_traces: ", new_traces)
+
                 if(minimize == "custom_flops" and self.contraction_info is not None):
                     ksize = compute_size_custom(self.contraction_info, combined_traces)
-                    # print("found ksize = ", ksize)
                 else:
                     ksize = compute_size(klegs, self.sizes)
                 score = local_score(isize, jsize, ksize)
@@ -1018,7 +999,6 @@ class ContractionProcessor:
                 c += 1
 
         while queue:
-            #print("optimizing greedy while loop")
             _, c0 = heapq.heappop(queue)
             
             i, j, ksize, klegs, ktraces = contractions.pop(c0)
@@ -1041,12 +1021,9 @@ class ContractionProcessor:
                     klegs, self.nodes[l], self.appearances, reverse_map, self.contraction_info
                 )
                 combined_traces = list(node_traces[k]) + list(node_traces[l]) + [new_traces]
-                # print("node_traces[k]: ", node_traces[k])
-                # print("node_traces[l]: ", node_traces[l])
-                # print("new_traces: ", new_traces)
+
                 if(minimize == "custom_flops" and self.contraction_info is not None):
                     msize = compute_size_custom(self.contraction_info, combined_traces)
-                    #print("found msize = ", msize)
                 else:
                     msize = compute_size(mlegs, self.sizes)
                 score = local_score(ksize, lsize, msize)
@@ -1064,8 +1041,6 @@ class ContractionProcessor:
         search_outer=False,
     ):
         compute_con_cost = parse_minimize_for_optimal(minimize)
-        print("self.contraction_info in optimal is: ", self.contraction_info)
-        print("minimize in optimal is: ", minimize)
 
         nterms = len(where)
         contractions = [{} for _ in range(nterms + 1)]
@@ -1075,10 +1050,6 @@ class ContractionProcessor:
 
         for i, node in enumerate(where):
             ilegs = self.nodes[node]
-            # if(len(ilegs) > 1):
-            #     ilegs = [ilegs[0]]
-
-            # print("ilegs are: ", ilegs)
             isubgraph = 1 << i
             termmap[isubgraph] = node
             iscore = 0
@@ -1090,7 +1061,6 @@ class ContractionProcessor:
     
         count = 0
         while not contractions[nterms]: # continue until entire graph has been built
-            # print("contractions: ", contractions)
             for m in range(2, nterms + 1):
                 # print("making subgraphs of size: ", m)
                 # try and make subgraphs of size m
@@ -1136,7 +1106,6 @@ class ContractionProcessor:
                                 jp += 1
                             else:  # iix == jix:
                                 # shared index
-                                #print("shared index found")
                                 new_legs.append((iix, ic + jc))
 
                                 if(minimize == "custom_flops" and self.contraction_info is not None):
@@ -1156,19 +1125,11 @@ class ContractionProcessor:
                         combined_traces = list(itraces) + list(jtraces) + [traces]
 
                         if(minimize == "custom_flops" and self.contraction_info is not None):
-                            if( len(where) < 10):
-                                new_score = compute_con_cost_custom(
-                                    self.contraction_info,
-                                    combined_traces
-                                )
-                            else:
-                                new_score = compute_con_cost_flops(
-                                    new_legs,
-                                    self.appearances,
-                                    self.sizes,
-                                    iscore,
-                                    jscore,
-                                )
+                            new_score = compute_con_cost_custom(
+                                self.contraction_info,
+                                combined_traces
+                            )
+
                         else:
                             new_score = compute_con_cost(
                                 new_legs,
@@ -1202,10 +1163,7 @@ class ContractionProcessor:
             count += 1
 
         ((final_legs, final_score, bitpath, final_traces),) = contractions[nterms].values()
-        # print("contractions are: ", contractions)
-        # print("Final path chosen is: ", final_legs)
-        print("Final score from optimize optimal is: ", final_score)
-        print("final traces: ", final_traces)
+
         for subgraph_i, subgraph_j in bitpath:
             i = termmap[subgraph_i]
             j = termmap[subgraph_j]
