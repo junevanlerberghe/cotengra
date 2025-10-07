@@ -296,7 +296,7 @@ def compute_size_custom(
             pte2, nodes2 = pte_list[pte2_idx]
             merged_nodes = nodes1.union(nodes2)
 
-            new_pte = pte1.merge_with(
+            new_pte, _ = pte1.merge_with(
                 pte2,
                 tuple(join_legs1),
                 tuple(join_legs2)
@@ -444,7 +444,7 @@ def compute_con_cost_custom(
             pte2, nodes2 = pte_list[pte2_idx]
             merged_nodes = nodes1.union(nodes2)
 
-            new_pte = pte1.merge_with(
+            new_pte, _ = pte1.merge_with(
                 pte2,
                 tuple(join_legs1),
                 tuple(join_legs2)
